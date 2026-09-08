@@ -61,10 +61,10 @@ mcp_probe chrome /opt/multica/tools/providers/node_modules/.bin/chrome-devtools-
 mkdir -p "$HOME/.pi/agent"
 # Exercise the same npm resolver as operator settings, using the image's
 # installed manifest as input instead of maintaining a separate package list.
-# The Pi launcher prepares its writable npm directory on the first invocation.
+# HOME initialization has already supplied the writable package installation.
 jq '{packages:(.dependencies | keys | map("npm:" + .)),
   defaultProvider:"runtime-fixture",defaultModel:"local-model"}' \
-  /opt/multica/tools/pi-packages/package.json > "$HOME/.pi/agent/settings.json"
+  "$HOME/.pi/agent/npm/package.json" > "$HOME/.pi/agent/settings.json"
 jq -n '{providers:{"runtime-fixture":{baseUrl:"http://127.0.0.1:1/v1",api:"openai-completions",apiKey:"synthetic-not-a-credential",models:[{id:"local-model",name:"Local fixture",reasoning:false,input:["text"],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:32768,maxTokens:2048}]}}}' > "$HOME/.pi/agent/models.json"
 jq -n '{mcpServers:{fixture:{command:"/opt/multica/tools/bin/codebase-memory-mcp"}}}' > "$HOME/.pi/agent/mcp.json"
 # Pi's CLI bundle supplies the SDK alias to extensions. Using that supported

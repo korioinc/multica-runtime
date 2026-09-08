@@ -50,20 +50,23 @@ and recreate Pods with the new image to apply changes to the system profile.
 - `pi-cache-optimizer`
 
 Packages and their dependencies are installed at image build time in
-`/opt/multica/tools/pi-packages`. On the first Pi invocation, the image's `pi`
-launcher copies this installation into the agent's writable `npm` directory
-before starting Pi. Both direct shell commands and controller-managed Pi use
-this launcher, so operator settings can keep `npm:` references without network
-installation on a new Pod. An existing npm directory is preserved, including
-user package additions and updates. Package changes remain local to that Pod.
+`/opt/multica/runtime/home-seed/.pi/agent/npm`. The controller's HOME
+initialization copies this installation to `~/.pi/agent/npm` before the worker
+starts. Both direct shell commands and controller-managed Pi execute the
+installed Pi CLI directly. Operator settings can keep `npm:` references without
+network installation on a new Pod. An existing npm directory is preserved,
+including user package additions and updates. Package changes remain local to
+that Pod.
 
 Extension installs use Pi's `--legacy-peer-deps` policy because its loader
-provides the host Pi APIs. Initialization uses a private staging directory and
-an exclusive lock, preserving standard npm command links and executable bits.
-The HOME configuration seed keeps its existing credential/session checks;
-package files are supplied by the Pi launcher. Image verification uses `npm:`
-references for both the first Pi launch and a second launch in the same HOME,
-including an actual MCP read.
+provides the host Pi APIs. HOME initialization publishes the complete package
+directory from a private staging directory without replacing existing state,
+preserving executable bits and npm command links within the package tree. The
+HOME seed validator allows package source directories such as `token` under
+`node_modules` while retaining credential/session checks outside the package
+installation. Image verification uses `npm:` references for both the first Pi
+launch and a second launch in the same HOME, including an actual MCP read.
+Final image verification initializes that HOME through the controller.
 
 ## Development and System Tools
 

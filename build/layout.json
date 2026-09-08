@@ -2,7 +2,7 @@
   "daemon": "/opt/multica/tools/bin/multica",
   "providers": {
     "codex": "/opt/multica/tools/providers/node_modules/.bin/codex",
-    "pi": "/opt/multica/tools/bin/pi"
+    "pi": "/opt/multica/tools/providers/node_modules/.bin/pi"
   },
   "binDirs": [
     "/opt/multica/tools/bin",

@@ -50,7 +50,8 @@ for provider in codex pi; do
 done
 seed=$(jq -er .homeSeed "$root/build/layout.json")
 [[ "$seed" == /opt/multica/runtime/home-seed && -d "$seed" ]]
-if find "$seed" -type l -o -type b -o -type c -o -type p -o -type s | grep -q .; then
+# Controller admission validates seed confinement, including npm command links.
+if find "$seed" -type b -o -type c -o -type p -o -type s | grep -q .; then
   echo 'Image home seed contains unsupported entries' >&2; exit 1
 fi
 mkdir -p /opt/multica/runtime

@@ -45,7 +45,9 @@ docker run "${options[@]}" --network none -e "EXPECTED_BUILD_ID=$label" "$image_
   test "$(jq -er .imageBuildID /opt/multica/runtime/image.json)" = "$EXPECTED_BUILD_ID"
   cmp /reference/versions.env /opt/multica/runtime/inventory/versions.env
   /opt/multica/controller/runtime image verify
-  /verify-input/verify-native.sh
+  private_root=$(mktemp -d /tmp/home.XXXXXX)
+  /opt/multica/controller/runtime home layout --private-root="$private_root"
+  HOME="$private_root/agents" /verify-input/verify-native.sh --initialized-home
 '
 # The controller-source build downloads only locked Go modules, and the adapter
 # communicates with its own loopback fixtures. No host auth/config is mounted.

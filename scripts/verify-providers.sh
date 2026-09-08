@@ -59,14 +59,11 @@ mcp_probe cbm /opt/multica/tools/bin/codebase-memory-mcp
 mcp_probe chrome /opt/multica/tools/providers/node_modules/.bin/chrome-devtools-mcp
 
 mkdir -p "$HOME/.pi/agent"
-jq -n '{packages:[
-  "/opt/multica/tools/pi-packages/node_modules/pi-mcp-adapter",
-  "/opt/multica/tools/pi-packages/node_modules/pi-thinking-level",
-  "/opt/multica/tools/pi-packages/node_modules/pi-web-access",
-  "/opt/multica/tools/pi-packages/node_modules/pi-openai-service-tier",
-  "/opt/multica/tools/pi-packages/node_modules/@dietrichgebert/ponytail",
-  "/opt/multica/tools/pi-packages/node_modules/pi-cache-optimizer"
-],defaultProvider:"runtime-fixture",defaultModel:"local-model"}' > "$HOME/.pi/agent/settings.json"
+# Exercise the same npm resolver as operator settings, using the image's
+# installed manifest as input instead of maintaining a separate package list.
+jq '{packages:(.dependencies | keys | map("npm:" + .)),
+  defaultProvider:"runtime-fixture",defaultModel:"local-model"}' \
+  "$HOME/.pi/agent/npm/package.json" > "$HOME/.pi/agent/settings.json"
 jq -n '{providers:{"runtime-fixture":{baseUrl:"http://127.0.0.1:1/v1",api:"openai-completions",apiKey:"synthetic-not-a-credential",models:[{id:"local-model",name:"Local fixture",reasoning:false,input:["text"],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:32768,maxTokens:2048}]}}}' > "$HOME/.pi/agent/models.json"
 jq -n '{mcpServers:{fixture:{command:"/opt/multica/tools/bin/codebase-memory-mcp"}}}' > "$HOME/.pi/agent/mcp.json"
 # Pi's CLI bundle supplies the SDK alias to extensions. Using that supported
@@ -100,19 +97,21 @@ export default function (pi) {
   });
 }
 FIXTURE
-start_server pi pi --mode rpc --no-session --extension "$scratch/pi-mcp-read.ts"
-send '{"id":"models","type":"get_available_models"}'
-receive '.id == "models" and .success == true and (.data.models | any(.id == "local-model" and .provider == "runtime-fixture"))' > "$scratch/pi.models.json"
-send '{"id":"state","type":"get_state"}'
-receive '.id == "state" and .success == true and .data.model.id == "local-model"' > "$scratch/pi.state.json"
-send '{"id":"commands","type":"get_commands"}'
-receive '.id == "commands" and .success == true and (.data.commands | any(.name == "mcp" and .source == "extension")) and (.data.commands | any(.name == "runtime-image-mcp-read"))' > "$scratch/pi.commands.json"
-send '{"id":"mcp-read","type":"prompt","message":"/runtime-image-mcp-read"}'
-receive '.type == "extension_ui_request" and .method == "notify" and .message == "runtime-image-mcp-read-passed"' > "$scratch/pi.mcp-read.json"
-receive '.id == "mcp-read" and .success == true' > "$scratch/pi.mcp-complete.json"
-cleanup_server
-echo 'Pi: image-local packages loaded, synthetic model selected and RPC extension commands available'
-echo 'Pi: actual MCP adapter -> CBM list_projects read passed without model generation'
+for startup in first repeat; do
+  start_server "pi-$startup" pi --mode rpc --no-session --extension "$scratch/pi-mcp-read.ts"
+  send '{"id":"models","type":"get_available_models"}'
+  receive '.id == "models" and .success == true and (.data.models | any(.id == "local-model" and .provider == "runtime-fixture"))' > "$scratch/pi-$startup.models.json"
+  send '{"id":"state","type":"get_state"}'
+  receive '.id == "state" and .success == true and .data.model.id == "local-model"' > "$scratch/pi-$startup.state.json"
+  send '{"id":"commands","type":"get_commands"}'
+  receive '.id == "commands" and .success == true and (.data.commands | any(.name == "mcp" and .source == "extension")) and (.data.commands | any(.name == "runtime-image-mcp-read"))' > "$scratch/pi-$startup.commands.json"
+  send '{"id":"mcp-read","type":"prompt","message":"/runtime-image-mcp-read"}'
+  receive '.type == "extension_ui_request" and .method == "notify" and .message == "runtime-image-mcp-read-passed"' > "$scratch/pi-$startup.mcp-read.json"
+  receive '.id == "mcp-read" and .success == true' > "$scratch/pi-$startup.mcp-complete.json"
+  cleanup_server
+  echo "Pi $startup startup: npm packages loaded, synthetic model selected and RPC extension commands available"
+  echo "Pi $startup startup: actual MCP adapter -> CBM list_projects read passed without model generation"
+done
 
 start_server codex codex app-server
 send '{"id":1,"method":"initialize","params":{"clientInfo":{"name":"runtime-image-verifier","version":"1.0.0"},"capabilities":{"experimentalApi":true}}}'

@@ -49,6 +49,19 @@ and recreate Pods with the new image to apply changes to the system profile.
 - `@dietrichgebert/ponytail`
 - `pi-cache-optimizer`
 
+Packages and their dependencies are installed at image build time in
+`/opt/multica/runtime/home-seed/.pi/agent/npm`. The controller's `home-layout`
+initialization copies them into each Pod's writable `$HOME/.pi/agent/npm`, so
+operator settings can keep `npm:` references without installing these packages
+on the first Pi launch. New Pods copy the image seed again; package changes made
+inside a running Pod remain local to that Pod.
+
+Extension installs use Pi's `--legacy-peer-deps` policy because its loader
+provides the host Pi APIs. npm command links are converted to relative shell
+launchers to satisfy the HOME seed's regular-file requirement while preserving
+command execution. Image verification uses `npm:` references for both the first
+Pi launch and a second launch in the same HOME, including an actual MCP read.
+
 ## Development and System Tools
 
 - Git: Git, Git LFS, git-flow, GitHub CLI (`gh`), Lefthook

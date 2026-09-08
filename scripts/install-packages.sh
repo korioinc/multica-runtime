@@ -24,11 +24,22 @@ export PIP_DISABLE_PIP_VERSION_CHECK=1
 # providers: @openai/codex, @earendil-works/pi-coding-agent, chrome-devtools-mcp, corepack.
 # pi-packages: pi-mcp-adapter, pi-thinking-level, pi-web-access, pi-openai-service-tier,
 # @dietrichgebert/ponytail, pi-cache-optimizer. Resolve dependencies for the versions in versions.env.
+pi_seed=/opt/multica/runtime/home-seed/.pi/agent/npm
 for group in providers pi-packages; do
-  mkdir -p "$tools/$group"
-  runtime_npm_manifest "$group" > "$tools/$group/package.json"
-  npm install --prefix "$tools/$group" --package-lock=false --ignore-scripts --no-audit --no-fund
+  prefix="$tools/$group"
+  npm_options=()
+  if [[ "$group" == pi-packages ]]; then
+    # Pi resolves npm: sources in agentDir/npm. The controller copies this seed
+    # into each Pod's writable HOME, including Pods with a fresh HOME volume.
+    prefix=$pi_seed
+    # Match Pi's managed installs: its loader supplies the host Pi APIs.
+    npm_options=(--legacy-peer-deps)
+  fi
+  mkdir -p "$prefix"
+  runtime_npm_manifest "$group" > "$prefix/package.json"
+  npm install --prefix "$prefix" "${npm_options[@]}" --package-lock=false --ignore-scripts --no-audit --no-fund
 done
+/bin/bash /build-input/scripts/prepare-npm-seed.sh "$pi_seed"
 
 # --- Corepack ---
 # Create Corepack shims for package managers such as Yarn and pnpm.
@@ -100,7 +111,7 @@ trap 'rm -rf -- "$scratch" "$build_home" "$cbm_runtime_dir"' EXIT HUP INT TERM
 CBM_CACHE_DIR="$seed" CBM_RUNTIME_DIR="$cbm_runtime_dir" codebase-memory-mcp config set auto_index true
 rm -rf -- "$cbm_runtime_dir"
 find /opt/multica/runtime/home-seed -type d -exec chmod 0755 {} +
-find /opt/multica/runtime/home-seed -type f -exec chmod 0644 {} +
+find /opt/multica/runtime/home-seed -type f -exec chmod u=rwX,go=rX {} +
 
 # --- Git LFS / Python command setup ---
 # Configure the OS-installed Git LFS system-wide and link python to python3.

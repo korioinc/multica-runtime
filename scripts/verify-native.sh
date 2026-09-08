@@ -27,9 +27,11 @@ while IFS= read -r -d '' key && IFS= read -r -d '' value; do export "$key=$value
 export TMPDIR=/tmp
 tool_path=$(jq -r '.binDirs[]' "$descriptor" | while IFS= read -r directory; do readlink -f "$directory"; done | paste -sd: -)
 export PATH="$tool_path"
+# Prepared images have no admission verification report yet, so home-layout
+# cannot run here. Match its private copy permissions, retaining owner execute.
 cp -Rn /opt/multica/runtime/home-seed/. "$HOME/"
 find "$HOME" -type d -exec chmod 0700 {} +
-find "$HOME" -type f -exec chmod 0600 {} +
+find "$HOME" -type f -exec chmod u+rw,go-rwx {} +
 pin() { sed -n "s/^$1=//p" "$inventory/versions.env"; }
 probe() {
   local name=$1 expected=$2

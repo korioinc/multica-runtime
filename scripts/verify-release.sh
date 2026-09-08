@@ -86,7 +86,11 @@ elif [[ $3 == create ]]; then
       metadata=$(cat "$state/images/${pin#sha256:}.json")
       entries=$(jq -n --argjson entries "$entries" --argjson metadata "$metadata" --arg digest "$pin" '$entries + [{digest:$digest,platform:{os:$metadata.os,architecture:$metadata.architecture}}]')
     done
-    manifest=$(jq -n --argjson entries "$entries" --arg revision "$RELEASE_FIXTURE_REVISION" --arg digest "$(cat "$state/index-digest")" '{digest:$digest,manifests:$entries,annotations:{"org.opencontainers.image.revision":$revision,"org.opencontainers.image.version":"0.1.0"}}')
+    # Buildx drops --annotation for Docker lists; only OCI indexes retain them.
+    manifest=$(jq -n --argjson entries "$entries" --arg revision "$RELEASE_FIXTURE_REVISION" --arg digest "$(cat "$state/index-digest")" --arg format "${RELEASE_FIXTURE_INDEX_FORMAT:-oci}" '
+      (if $format == "docker" then "application/vnd.docker.distribution.manifest.list.v2+json" else "application/vnd.oci.image.index.v1+json" end) as $media |
+      {schemaVersion:2,mediaType:$media,digest:$digest,manifests:$entries} |
+      if $format == "docker" then . else .annotations={"org.opencontainers.image.revision":$revision,"org.opencontainers.image.version":"0.1.0"} end')
     printf '%s\n' "$manifest" > "$state/refs/$(key "$target").json"
     printf '%s\n' "$manifest" > "$state/refs/$(key "fixture/runtime@$(cat "$state/index-digest")").json"
   fi
@@ -117,11 +121,26 @@ initialize() {
 release() { "$root/.github/scripts/release.sh" --root "$scratch/checkout" --image fixture/runtime --revision "$RELEASE_FIXTURE_REVISION" "$@" > "$scratch/result" 2> "$scratch/error"; }
 record() { release record-native --platform "linux/$1" --controller-source "$scratch/checkout" --records "$RELEASE_FIXTURE_ROOT/records"; }
 publish() { release publish --records "$RELEASE_FIXTURE_ROOT/records"; }
+require_success() { if ! "$@"; then cat "$scratch/error" >&2; echo "Release fixture operation failed: $*" >&2; exit 1; fi; }
 expect_blocked() { if "$@"; then echo 'Release fixture unexpectedly allowed an unsafe transition' >&2; exit 1; fi; }
 artifact_digest() {
   local file
   file="$RELEASE_FIXTURE_ROOT/refs/$(key "$1").json"
   if [[ -f "$file" ]]; then shasum -a 256 "$file" | cut -d ' ' -f 1; else echo absent; fi
+}
+registry_state() {
+  local file
+  for file in "$RELEASE_FIXTURE_ROOT/refs/"*.json "$RELEASE_FIXTURE_ROOT/tag" "$RELEASE_FIXTURE_ROOT/release"; do
+    [[ -f $file ]] || continue
+    printf '%s\n' "${file#"$RELEASE_FIXTURE_ROOT/"}"
+    cat "$file"
+  done
+}
+expect_blocked_without_writes() {
+  registry_state > "$scratch/before-state"
+  expect_blocked "$@"
+  registry_state > "$scratch/after-state"
+  cmp "$scratch/before-state" "$scratch/after-state"
 }
 
 initialize
@@ -204,4 +223,57 @@ jq --arg wrong "$arm64_index" '.[0].Descriptor.digest=$wrong' "$RELEASE_FIXTURE_
 cp "$scratch/local.json" "$RELEASE_FIXTURE_ROOT/local-amd64.json"
 expect_blocked record amd64
 [[ $(artifact_digest fixture/runtime:latest) == "$latest_before" ]]
-echo 'Release fixture passed: failed/partial candidates, duplicate version/platform, retry bytes and stale-main promotion safeguards'
+
+# Preserve accepted version bytes across a failed release and retry, with both
+# annotated OCI indexes and Docker lists whose metadata lives in child labels.
+for format in oci docker; do
+  export RELEASE_FIXTURE_INDEX_FORMAT=$format
+  initialize
+  record amd64
+  expect_blocked_without_writes publish
+  touch "$RELEASE_FIXTURE_ROOT/verification-fails"
+  expect_blocked_without_writes record arm64
+  rm "$RELEASE_FIXTURE_ROOT/verification-fails"
+  record arm64
+  touch "$RELEASE_FIXTURE_ROOT/fail-release"
+  expect_blocked publish
+  version_file="$RELEASE_FIXTURE_ROOT/refs/$(key fixture/runtime:0.1.0).json"
+  cp "$version_file" "$scratch/format-version"
+  [[ $(artifact_digest fixture/runtime:latest) == absent ]]
+  rm "$RELEASE_FIXTURE_ROOT/fail-release"
+  require_success publish
+  cmp "$scratch/format-version" "$version_file"
+  cmp "$scratch/format-version" "$RELEASE_FIXTURE_ROOT/refs/$(key fixture/runtime:latest).json"
+  registry_state > "$scratch/format-committed"
+  require_success publish
+  registry_state > "$scratch/format-retried"
+  cmp "$scratch/format-committed" "$scratch/format-retried"
+
+  for change in \
+    '.annotations["org.opencontainers.image.version"]="9.0.0"' \
+    '.annotations["org.opencontainers.image.revision"]="2222222222222222222222222222222222222222"' \
+    '.manifests += [.manifests[0]]' \
+    '.manifests[1].digest=.manifests[0].digest'; do
+    jq "$change" "$scratch/format-version" > "$version_file"
+    expect_blocked_without_writes publish
+  done
+  if [[ $format == oci ]]; then
+    jq 'del(.annotations)' "$scratch/format-version" > "$version_file"
+    expect_blocked_without_writes publish
+  fi
+  cp "$scratch/format-version" "$version_file"
+  arm64_metadata="$RELEASE_FIXTURE_ROOT/images/$(printf '%064d' 2).json"
+  cp "$arm64_metadata" "$scratch/format-arm64"
+  for change in \
+    '.config.Labels["org.opencontainers.image.version"]="9.0.0"' \
+    '.config.Labels["org.opencontainers.image.revision"]="2222222222222222222222222222222222222222"' \
+    '.config.Labels["io.multica.controller-abi"]="1"' \
+    '.config.Labels["io.multica.image-build-id"]="11111111-1111-4111-8111-111111111111"' \
+    '.architecture="amd64"'; do
+    jq "$change" "$scratch/format-arm64" > "$arm64_metadata"
+    expect_blocked_without_writes publish
+  done
+  cp "$scratch/format-arm64" "$arm64_metadata"
+  require_success publish
+done
+echo 'Release fixture passed: failed/partial candidates, duplicate version/platform, retry bytes, Docker/OCI metadata authority and stale-main promotion safeguards'

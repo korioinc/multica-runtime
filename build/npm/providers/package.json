@@ -1,0 +1,11 @@
+{
+  "name": "multica-runtime-providers",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "@openai/codex": "0.153.4",
+    "@earendil-works/pi-coding-agent": "0.85.0",
+    "chrome-devtools-mcp": "1.6.0",
+    "corepack": "0.35.0"
+  }
+}

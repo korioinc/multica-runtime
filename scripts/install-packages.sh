@@ -2,6 +2,10 @@
 set -euo pipefail
 # shellcheck source=install-common.sh
 source /build-input/scripts/install-common.sh
+# shellcheck source=lib.sh
+source /build-input/scripts/lib.sh
+
+# --- Temporary installation environment ---
 # Root installers must not put caches or first-run state into the final user's
 # HOME. Keep this owner-local so changing it does not invalidate PHP/Rust builds.
 # /opt ancestors also satisfy CBM's private-path checks for HOME-derived state.
@@ -16,47 +20,74 @@ export npm_config_cache="$build_home/.npm" COREPACK_HOME="$build_home/.cache/nod
 export PIP_CACHE_DIR="$build_home/.cache/pip"
 export PIP_DISABLE_PIP_VERSION_CHECK=1
 
+# --- npm: AI agents and Pi extensions ---
+# providers: @openai/codex, @earendil-works/pi-coding-agent, chrome-devtools-mcp, corepack.
+# pi-packages: pi-mcp-adapter, pi-thinking-level, pi-web-access, pi-openai-service-tier,
+# @dietrichgebert/ponytail, pi-cache-optimizer. Resolve dependencies for the versions in versions.env.
 for group in providers pi-packages; do
   mkdir -p "$tools/$group"
-  cp "/build-input/build/npm/$group/package.json" "/build-input/build/npm/$group/package-lock.json" "$tools/$group/"
-  npm ci --prefix "$tools/$group" --ignore-scripts --no-audit --no-fund
+  runtime_npm_manifest "$group" > "$tools/$group/package.json"
+  npm install --prefix "$tools/$group" --package-lock=false --ignore-scripts --no-audit --no-fund
 done
+
+# --- Corepack ---
+# Create Corepack shims for package managers such as Yarn and pnpm.
 corepack enable --install-directory "$tools/bin"
 
+# --- Multica CLI ---
+# Install the Multica executable in the shared tools directory.
 download multica "$scratch/multica.tar.gz"
 tar -xzf "$scratch/multica.tar.gz" -C "$tools/bin" multica
 chmod 0555 "$tools/bin/multica"
 
+# --- GitHub CLI ---
+# Install gh for managing GitHub repositories, pull requests, and issues from the terminal.
 download gh "$scratch/gh.tar.gz"
 tar -xzf "$scratch/gh.tar.gz" -C "$scratch"
 install -m 0555 "$scratch/gh_${GH_VERSION}_linux_${arch}/bin/gh" "$tools/bin/gh"
+
+# --- Kubernetes navigation tools ---
+# k9s: terminal cluster UI; kubectx: context switching; kubens: namespace switching.
 for executable in k9s kubectx kubens; do
   download "$executable" "$scratch/$executable.tar.gz"
   mkdir "$scratch/$executable"
   tar -xzf "$scratch/$executable.tar.gz" -C "$scratch/$executable"
   install -m 0555 "$scratch/$executable/$executable" "$tools/bin/$executable"
 done
+
+# --- Development and cluster CLIs ---
+# yq: YAML processing; shfmt: shell formatting; lefthook: Git hooks; kubectl: Kubernetes management.
 for executable in yq shfmt lefthook kubectl; do
   download "$executable" "$tools/bin/$executable"
   chmod 0555 "$tools/bin/$executable"
 done
 
+# --- Python: uv / uvx ---
+# Install uv for Python packages and virtual environments, and uvx for running tools.
 download uv "$scratch/uv.tar.gz"
 mkdir "$scratch/uv"
 tar -xzf "$scratch/uv.tar.gz" --strip-components=1 -C "$scratch/uv"
 install -m 0555 "$scratch/uv/uv" "$scratch/uv/uvx" "$tools/bin/"
 
+# --- AWS CLI ---
+# Install the AWS service management CLI in its own directory.
 download aws "$scratch/aws.zip"
 unzip -q "$scratch/aws.zip" -d "$scratch/aws"
 "$scratch/aws/aws/install" --install-dir "$tools/aws-cli" --bin-dir "$tools/bin"
 
+# --- Oracle Cloud CLI ---
+# Install the OCI CLI version from versions.env and its dependencies in a separate virtual environment.
 python3 -m venv "$tools/oci"
-"$tools/oci/bin/pip" install --require-hashes --no-deps --no-cache-dir -r /build-input/locks/python-oci.lock
+"$tools/oci/bin/pip" install --no-cache-dir "oci-cli==$OCI_CLI_VERSION"
 "$tools/oci/bin/pip" check
 
+# --- Google Cloud CLI ---
+# Install the SDK and gcloud CLI for managing Google Cloud services.
 download gcloud "$scratch/gcloud.tar.gz"
 tar -xzf "$scratch/gcloud.tar.gz" -C "$tools"
 
+# --- Codebase Memory MCP ---
+# Install the codebase indexing/search server and enable auto-indexing in the user configuration seed.
 download cbm "$scratch/cbm.tar.gz"
 mkdir "$scratch/cbm"
 tar -xzf "$scratch/cbm.tar.gz" -C "$scratch/cbm"
@@ -71,11 +102,14 @@ rm -rf -- "$cbm_runtime_dir"
 find /opt/multica/runtime/home-seed -type d -exec chmod 0755 {} +
 find /opt/multica/runtime/home-seed -type f -exec chmod 0644 {} +
 
+# --- Git LFS / Python command setup ---
+# Configure the OS-installed Git LFS system-wide and link python to python3.
 git lfs install --system
 ln -sf /usr/bin/python3 "$tools/bin/python"
+
+# --- Installation records ---
+# Copy the version inputs into the image to track installed tools.
 mkdir -p /opt/multica/runtime/inventory
 cp /build-input/versions.env /opt/multica/runtime/inventory/versions.env
-cp "/build-input/locks/downloads-$arch.json" /opt/multica/runtime/inventory/downloads.json
-cp /build-input/locks/python-oci.lock /opt/multica/runtime/inventory/python-oci.lock
 # Read-only installation prefixes; runtime cache/config belongs to private HOME.
 chmod -R a-w "$tools"

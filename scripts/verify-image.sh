@@ -36,8 +36,6 @@ options=(--rm --platform "$platform" --user 65532:65532 --read-only --cap-drop A
   --tmpfs '/workspace:rw,exec,uid=65532,gid=65532,mode=0700'
   --mount "type=bind,src=$runtime_root/scripts,dst=/verify-input,readonly"
   --mount "type=bind,src=$runtime_root/versions.env,dst=/reference/versions.env,readonly"
-  --mount "type=bind,src=$runtime_root/locks,dst=/reference/locks,readonly"
-  --mount "type=bind,src=$runtime_root/build/npm,dst=/reference/npm,readonly"
   --mount "type=bind,src=$controller_source/src,dst=/controller-source/src,readonly"
   --entrypoint /bin/bash)
 # A wrong checkout is a startup error, before the native/adapter suites run.
@@ -46,13 +44,6 @@ docker run "${options[@]}" "$image_id" -ec '/verify-input/verify-source.sh /cont
 docker run "${options[@]}" --network none -e "EXPECTED_BUILD_ID=$label" "$image_id" -ec '
   test "$(jq -er .imageBuildID /opt/multica/runtime/image.json)" = "$EXPECTED_BUILD_ID"
   cmp /reference/versions.env /opt/multica/runtime/inventory/versions.env
-  arch=$(dpkg --print-architecture)
-  cmp "/reference/locks/downloads-$arch.json" /opt/multica/runtime/inventory/downloads.json
-  cmp "/reference/locks/apt-$arch.lock" /opt/multica/runtime/inventory/apt.lock
-  cmp /reference/locks/python-oci.lock /opt/multica/runtime/inventory/python-oci.lock
-  for group in providers pi-packages; do
-    cmp "/reference/npm/$group/package-lock.json" "/opt/multica/tools/$group/package-lock.json"
-  done
   /opt/multica/controller/runtime image verify
   /verify-input/verify-native.sh
 '

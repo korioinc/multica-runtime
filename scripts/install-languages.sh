@@ -3,10 +3,14 @@ set -euo pipefail
 # shellcheck source=install-common.sh
 source /build-input/scripts/install-common.sh
 
+# --- Node.js / npm ---
+# Install the JavaScript runtime and its bundled npm package manager.
 download node "$scratch/node.tar.xz"
 mkdir -p "$tools/node"
 tar -xJf "$scratch/node.tar.xz" --strip-components=1 -C "$tools/node"
 
+# --- PHP ---
+# Build PHP CLI with string, internationalization, compression, and MySQL/PostgreSQL extensions.
 download php "$scratch/php.tar.xz"
 mkdir "$scratch/php"
 tar -xJf "$scratch/php.tar.xz" --strip-components=1 -C "$scratch/php"
@@ -23,6 +27,9 @@ tar -xJf "$scratch/php.tar.xz" --strip-components=1 -C "$scratch/php"
   mkdir -p "$tools/php/etc/conf.d"
   cp php.ini-development "$tools/php/etc/php.ini"
 )
+
+# --- Additional PHP extensions ---
+# Build MongoDB, Redis, and Zstandard extensions and enable them through PHP ini files.
 for extension in mongodb redis zstd; do
   download "$extension" "$scratch/$extension.tgz"
   mkdir "$scratch/$extension"
@@ -36,14 +43,20 @@ for extension in mongodb redis zstd; do
   )
   printf 'extension=%s.so\n' "$extension" > "$tools/php/etc/conf.d/$extension.ini"
 done
+
+# --- Composer ---
+# Install the dependency manager for PHP projects.
 download composer "$tools/bin/composer"
 chmod 0555 "$tools/bin/composer"
 
+# --- Rust / Cargo ---
+# Install the Rust compiler, Cargo, and bundled tools, excluding rust-docs.
 download rust "$scratch/rust.tar.xz"
 mkdir "$scratch/rust"
 tar -xJf "$scratch/rust.tar.xz" --strip-components=1 -C "$scratch/rust"
 "$scratch/rust/install.sh" --prefix="$tools/rust" --without=rust-docs --disable-ldconfig
 
-# Python and pipx are Debian-owned; their complete package versions are locked.
+# --- Python / pipx version checks ---
+# Verify the pinned versions of Python and pipx installed as Debian packages by install-os.sh.
 [[ "$(python3 -c 'import platform; print(platform.python_version())')" == "$PYTHON_VERSION" ]]
 [[ "$(pipx --version)" == "$PIPX_VERSION" ]]

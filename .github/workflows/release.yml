@@ -69,7 +69,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - name: Validate shell scripts, locks and local release failure fixtures
+      - name: Validate shell scripts, version inputs and local release failure fixtures
         run: |
           shellcheck scripts/*.sh .github/scripts/*.sh
           scripts/inputs.sh check --production

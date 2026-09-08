@@ -12,7 +12,7 @@ COPY scripts/downloads.sh scripts/install-common.sh scripts/install-languages.sh
 
 FROM scratch AS package-input
 COPY versions.env /versions.env
-COPY scripts/lib.sh scripts/downloads.sh scripts/install-common.sh scripts/install-packages.sh scripts/pi.sh /scripts/
+COPY scripts/lib.sh scripts/downloads.sh scripts/install-common.sh scripts/install-packages.sh /scripts/
 
 FROM scratch AS descriptor-input
 COPY versions.env /versions.env

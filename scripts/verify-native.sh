@@ -1,6 +1,11 @@
 #!/bin/bash
 # Runs inside the image with fresh private writable HOME/tmp/run mounts.
 set -euo pipefail
+initialized_home=false
+if (($#)); then
+  [[ $# == 1 && $1 == --initialized-home ]] || { echo 'Usage: verify-native.sh [--initialized-home]' >&2; exit 2; }
+  initialized_home=true
+fi
 umask 077
 [[ $(id -u) == 65532 && $(id -g) == 65532 ]] || { echo 'Verification requires UID/GID 65532' >&2; exit 1; }
 descriptor=/opt/multica/runtime/image.json
@@ -27,11 +32,13 @@ while IFS= read -r -d '' key && IFS= read -r -d '' value; do export "$key=$value
 export TMPDIR=/tmp
 tool_path=$(jq -r '.binDirs[]' "$descriptor" | while IFS= read -r directory; do readlink -f "$directory"; done | paste -sd: -)
 export PATH="$tool_path"
-# Prepared images have no admission verification report yet, so home-layout
-# cannot run here. Match its private copy permissions, retaining owner execute.
-cp -Rn /opt/multica/runtime/home-seed/. "$HOME/"
-find "$HOME" -type d -exec chmod 0700 {} +
-find "$HOME" -type f -exec chmod u+rw,go-rwx {} +
+if [[ "$initialized_home" == false ]]; then
+  # Prepared images have no admission verification report yet, so home-layout
+  # cannot run here. Match its private copy permissions, retaining owner execute.
+  cp -Rn /opt/multica/runtime/home-seed/. "$HOME/"
+  find "$HOME" -type d -exec chmod 0700 {} +
+  find "$HOME" -type f -exec chmod u+rw,go-rwx {} +
+fi
 pin() { sed -n "s/^$1=//p" "$inventory/versions.env"; }
 probe() {
   local name=$1 expected=$2

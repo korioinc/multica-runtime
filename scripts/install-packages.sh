@@ -28,6 +28,8 @@ for group in providers pi-packages; do
   prefix="$tools/$group"
   npm_options=()
   if [[ "$group" == pi-packages ]]; then
+    # HOME initialization supplies Pi's writable npm prefix before any launch.
+    prefix=/opt/multica/runtime/home-seed/.pi/agent/npm
     # Match Pi's managed installs: its loader supplies the host Pi APIs.
     npm_options=(--legacy-peer-deps)
   fi
@@ -35,17 +37,6 @@ for group in providers pi-packages; do
   runtime_npm_manifest "$group" > "$prefix/package.json"
   npm install --prefix "$prefix" "${npm_options[@]}" --package-lock=false --ignore-scripts --no-audit --no-fund
 done
-# The launcher copies this trusted tree into Pi's private npm prefix on first
-# use. Keep npm's relative command links, but never copy links outside the tree.
-while IFS= read -r -d '' link; do
-  target=$(realpath -e -- "$link")
-  [[ "$target" == "$tools/pi-packages/"* ]] || { echo "Pi package link escapes its installation: $link" >&2; exit 1; }
-done < <(find "$tools/pi-packages" -type l -print0)
-# Bind the real CLI bytes into the descriptor-hashed launcher.
-pi_sha256=$(sha256sum -- "$tools/providers/node_modules/.bin/pi")
-pi_sha256=${pi_sha256%% *}
-sed "s/@PI_CLI_SHA256@/$pi_sha256/" /build-input/scripts/pi.sh > "$scratch/pi"
-install -m 0555 "$scratch/pi" "$tools/bin/pi"
 
 # --- Corepack ---
 # Create Corepack shims for package managers such as Yarn and pnpm.

@@ -8,7 +8,7 @@
 
 필요 도구는 Docker Buildx, Bash, jq, curl, OpenSSL, UUID 생성기와 matching controller checkout입니다. 모든 자동화는 `.sh`로 구현합니다. 설치·native 검증에서 Go/PHP/Python 등 실제 도구를 실행하지만 별도의 Go/Python 스크립트 래퍼를 두지 않습니다.
 
-아직 ABI 2 production base digest가 발행되지 않아 `versions.env`의 `CONTROLLER_BASE_IMAGE_REF`는 비어 있습니다. Production build와 release는 이 상태를 거부합니다. 아래처럼 같은 workspace의 실제 로컬 베이스를 명시하면 GHCR 발행에 의존하지 않고 개발할 수 있습니다.
+`versions.env`의 `CONTROLLER_BASE_IMAGE_REF`는 registry에 공개된 ABI 2 controller base의 index digest에 고정되어 있습니다. 아래처럼 같은 workspace의 실제 로컬 베이스를 명시하면 production pin을 바꾸지 않고 개발할 수 있습니다.
 
 ```bash
 controller=../multica-runtime-controller

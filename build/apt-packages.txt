@@ -50,6 +50,7 @@ shellcheck
 tar
 tree
 unzip
+util-linux
 vim
 xz-utils
 zip

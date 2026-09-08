@@ -16,7 +16,7 @@ done
 [[ -n "$image" && -n "$controller_source" && "$image" != -* ]] || { usage >&2; exit 2; }
 controller_source=$(cd -- "$controller_source" && pwd)
 [[ -f "$controller_source/src/go.mod" ]] || { echo 'Matching controller source is required' >&2; exit 2; }
-runtime_check_inputs
+runtime_check_inputs ''
 inspect=$(docker image inspect "$image")
 image_id=$(jq -er '.[0].Id' <<< "$inspect")
 platform=$(jq -er '.[0] | .Os + "/" + .Architecture' <<< "$inspect")

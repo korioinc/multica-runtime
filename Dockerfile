@@ -17,7 +17,7 @@ COPY scripts/lib.sh scripts/downloads.sh scripts/install-common.sh scripts/insta
 FROM scratch AS descriptor-input
 COPY versions.env /versions.env
 COPY build/layout.json /build/layout.json
-COPY scripts/finalize-image.sh /scripts/finalize-image.sh
+COPY scripts/finalize-image.sh scripts/render-path-profile.sh /scripts/
 
 FROM scratch AS verification-input
 COPY scripts/verify-source.sh scripts/verify-native.sh scripts/verify-adapter.sh scripts/verify-providers.sh /scripts/
@@ -40,6 +40,13 @@ RUN --mount=from=package-input,target=/build-input,readonly \
     --mount=type=tmpfs,target=/home/multica/agents \
     --mount=type=cache,id=multica-runtime-downloads,target=/var/cache/multica-downloads,sharing=locked \
     /bin/bash /build-input/scripts/install-packages.sh
+# Login shells reset ENV PATH via /etc/profile, including agent tool calls in
+# task-worker Pods. Install outside HOME and independently of the entrypoint.
+RUN --mount=from=descriptor-input,target=/build-input,readonly \
+    --mount=type=tmpfs,target=/home/multica/agents \
+    mkdir -p /etc/profile.d && \
+    /bin/bash /build-input/scripts/render-path-profile.sh /build-input/build/layout.json > /etc/profile.d/10-multica-path.sh && \
+    chmod 0644 /etc/profile.d/10-multica-path.sh
 ENV PATH="/opt/multica/tools/bin:/opt/multica/tools/node/bin:/opt/multica/tools/php/bin:/opt/multica/tools/rust/bin:/opt/multica/tools/providers/node_modules/.bin:/opt/multica/tools/oci/bin:/opt/multica/tools/google-cloud-sdk/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     HOME=/home/multica/agents \
     GOTOOLCHAIN=local \

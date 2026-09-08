@@ -1,0 +1,148 @@
+name: Release runtime image
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+concurrency:
+  group: runtime-release
+  cancel-in-progress: false
+env:
+  IMAGE: ghcr.io/korioinc/multica-runtime
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    outputs:
+      published: ${{ steps.plan.outputs.published }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: plan
+        name: Validate the independent VERSION and current main revision
+        run: >-
+          .github/scripts/release.sh --root "$GITHUB_WORKSPACE"
+          --image "$IMAGE" --revision "$GITHUB_SHA" plan
+
+  native:
+    needs: plan
+    if: needs.plan.outputs.published != 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Validate shell scripts, locks and local release failure fixtures
+        run: |
+          shellcheck scripts/*.sh .github/scripts/*.sh
+          scripts/inputs.sh check --production
+          scripts/verify-release.sh
+      - id: base
+        name: Read controller revision from the pinned base
+        run: scripts/resolve-base.sh --platform '${{ matrix.platform }}'
+      - name: Check out the exact controller source for the adapter harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: korioinc/multica-runtime-controller
+          ref: ${{ steps.base.outputs.revision }}
+          path: .controller-source
+          persist-credentials: false
+      - id: candidate
+        name: Reuse verified candidate bytes on retry
+        run: >-
+          .github/scripts/release.sh --root "$GITHUB_WORKSPACE"
+          --image "$IMAGE" --revision "$GITHUB_SHA"
+          prepare-native --platform '${{ matrix.platform }}'
+      - name: Build a unique prepared image, verify it, and finalize once
+        if: steps.candidate.outputs.reuse != 'true'
+        run: >-
+          scripts/build-image.sh --image '${{ steps.candidate.outputs.image }}'
+          --controller-source .controller-source --platform '${{ matrix.platform }}'
+      - name: Verify the final image natively before uploading candidate bytes
+        run: >-
+          .github/scripts/release.sh --root "$GITHUB_WORKSPACE"
+          --image "$IMAGE" --revision "$GITHUB_SHA"
+          record-native --platform '${{ matrix.platform }}'
+          --controller-source "$GITHUB_WORKSPACE/.controller-source"
+          --records "$RUNNER_TEMP/native-results"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-native-${{ matrix.arch }}
+          path: ${{ runner.temp }}/native-results/*.json
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [plan, native]
+    if: >-
+      always() && needs.plan.result == 'success' &&
+      ((needs.plan.outputs.published == 'true' && needs.native.result == 'skipped') ||
+       needs.native.result == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: write
+      packages: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: needs.plan.outputs.published != 'true'
+        with:
+          pattern: runtime-native-*
+          path: ${{ runner.temp }}/native-results
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Publish immutable version and promote current main to latest
+        run: >-
+          .github/scripts/release.sh --root "$GITHUB_WORKSPACE"
+          --image "$IMAGE" --revision "$GITHUB_SHA"
+          publish --records "$RUNNER_TEMP/native-results"

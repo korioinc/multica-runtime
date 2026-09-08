@@ -24,6 +24,21 @@ version_compare() {
   done
   printf '0\n'
 }
+version_next_patch() {
+  version_stable "$1" || return 1
+  local prefix=${1%.*} patch=${1##*.} digit suffix=''
+  # Increment as decimal text so large patch numbers cannot overflow shell integers.
+  while [[ -n $patch ]]; do
+    digit=${patch: -1}
+    patch=${patch%?}
+    if [[ $digit != 9 ]]; then
+      printf '%s.%s%s%s\n' "$prefix" "$patch" "$((digit + 1))" "$suffix"
+      return
+    fi
+    suffix="0$suffix"
+  done
+  printf '%s.1%s\n' "$prefix" "$suffix"
+}
 version_github_output() {
   [[ -n ${GITHUB_OUTPUT:-} ]] || { version_error 'GITHUB_OUTPUT required'; return 1; }
   jq -er 'to_entries[] | if (.value | tostring | test("[\r\n]")) then error("multiline output") else "\(.key)=\(.value)" end' <<< "$1" >> "$GITHUB_OUTPUT"

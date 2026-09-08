@@ -2,6 +2,18 @@
 
 Multica Runtime is a custom development image based on the image from [korioinc/multica-runtime-controller](https://github.com/korioinc/multica-runtime-controller). It adds the languages, package managers, and tools needed for software development.
 
+## Tool Search Paths
+
+The image sets `PATH` for direct commands and non-login shells. Login shells such as
+`bash -lc` also load `/etc/profile.d/10-multica-path.sh`, generated from the same
+`build/layout.json` tool directories used by the controller. The profile restores
+missing directories without duplicating existing entries.
+
+This applies to task-worker Pods with a fresh HOME volume and an overridden image
+entrypoint. Preinstalled commands such as `multica`, `codex`, `pi`, `node`, `php`,
+`cargo`, `go`, and `chrome-devtools-mcp` can be invoked by name. Rebuild the image
+and recreate Pods with the new image to apply changes to the system profile.
+
 ## Languages and Package Managers
 
 - Go SDK (included in the base image)

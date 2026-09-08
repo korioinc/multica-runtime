@@ -23,6 +23,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     outputs:
       published: ${{ steps.plan.outputs.published }}
+      version: ${{ steps.plan.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -35,7 +36,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
       - id: plan
-        name: Validate the independent VERSION and current main revision
+        name: Select an available release version for the current main revision
         run: >-
           .github/scripts/release.sh --root "$GITHUB_WORKSPACE"
           --image "$IMAGE" --revision "$GITHUB_SHA" plan
@@ -89,16 +90,19 @@ jobs:
         run: >-
           .github/scripts/release.sh --root "$GITHUB_WORKSPACE"
           --image "$IMAGE" --revision "$GITHUB_SHA"
+          --version '${{ needs.plan.outputs.version }}'
           prepare-native --platform '${{ matrix.platform }}'
       - name: Build a unique prepared image, verify it, and finalize once
         if: steps.candidate.outputs.reuse != 'true'
         run: >-
           scripts/build-image.sh --image '${{ steps.candidate.outputs.image }}'
+          --version '${{ needs.plan.outputs.version }}'
           --controller-source .controller-source --platform '${{ matrix.platform }}'
       - name: Verify the final image natively before uploading candidate bytes
         run: >-
           .github/scripts/release.sh --root "$GITHUB_WORKSPACE"
           --image "$IMAGE" --revision "$GITHUB_SHA"
+          --version '${{ needs.plan.outputs.version }}'
           record-native --platform '${{ matrix.platform }}'
           --controller-source "$GITHUB_WORKSPACE/.controller-source"
           --records "$RUNNER_TEMP/native-results"
@@ -145,4 +149,5 @@ jobs:
         run: >-
           .github/scripts/release.sh --root "$GITHUB_WORKSPACE"
           --image "$IMAGE" --revision "$GITHUB_SHA"
+          --version '${{ needs.plan.outputs.version }}'
           publish --records "$RUNNER_TEMP/native-results"

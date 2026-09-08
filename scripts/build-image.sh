@@ -2,8 +2,10 @@
 set -euo pipefail
 # shellcheck source=lib.sh
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
-usage() { echo 'Usage: build-image.sh --image IMAGE --controller-source PATH [--base-image LOCAL_IMAGE] [--platform linux/amd64|linux/arm64] [--target installed|prepared|final]'; }
-image='' controller_source='' base='' platform='' target=final
+# shellcheck source=release-lib.sh
+source "$runtime_root/scripts/release-lib.sh"
+usage() { echo 'Usage: build-image.sh --image IMAGE --controller-source PATH [--version VERSION] [--base-image LOCAL_IMAGE] [--platform linux/amd64|linux/arm64] [--target installed|prepared|final]'; }
+image='' controller_source='' base='' platform='' target=final version=''
 while (($#)); do
   case "$1" in --help|-h) usage; exit 0 ;; esac
   (($# >= 2)) || { usage >&2; exit 2; }
@@ -13,6 +15,7 @@ while (($#)); do
     --base-image) base=$2 ;;
     --platform) platform=$2 ;;
     --target) target=$2 ;;
+    --version) version=$2 ;;
     *) usage >&2; exit 2 ;;
   esac
   shift 2
@@ -33,8 +36,8 @@ if [[ -z "$platform" ]]; then
 fi
 [[ "$platform" =~ ^linux/(amd64|arm64)$ ]] || { usage >&2; exit 2; }
 build_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
-version=$(cat "$runtime_root/VERSION")
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+[[ -n "$version" ]] || version=$(version_read "$runtime_root/VERSION")
+version_stable "$version"
 revision=$(git -C "$runtime_root" rev-parse HEAD)
 docker buildx build --load --platform "$platform" --target "$target" \
   --build-context "controller-source=$controller_source" \

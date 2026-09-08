@@ -8,8 +8,8 @@ source "$repository/scripts/release-lib.sh"
 
 usage() {
   cat <<'USAGE'
-Usage: release.sh --root ABSOLUTE_CHECKOUT --image REPOSITORY --revision FULL_COMMIT COMMAND
-  plan
+Usage: release.sh --root ABSOLUTE_CHECKOUT --image REPOSITORY --revision FULL_COMMIT [--version VERSION] COMMAND
+  plan (select an available version at or above VERSION and the published latest version)
   prepare-native --platform linux/amd64|linux/arm64
   record-native --platform linux/amd64|linux/arm64 --records DIRECTORY --controller-source DIRECTORY
   publish --records DIRECTORY
@@ -20,12 +20,12 @@ fail() { printf 'release blocked: %s\n' "$*" >&2; exit 1; }
 supported_platform() { [[ $1 == linux/amd64 || $1 == linux/arm64 ]]; }
 valid_digest() { [[ $1 =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'invalid registry digest'; printf '%s\n' "$1"; }
 
-root='' image='' revision='' release_command='' platform='' records='' controller_source=''
+root='' image='' revision='' version='' release_command='' platform='' records='' controller_source=''
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --root|--image|--revision)
+    --root|--image|--revision|--version)
       [[ $# -ge 2 ]] || { usage >&2; exit 1; }
-      case $1 in --root) root=$2 ;; --image) image=$2 ;; --revision) revision=$2 ;; esac
+      case $1 in --root) root=$2 ;; --image) image=$2 ;; --revision) revision=$2 ;; --version) version=$2 ;; esac
       shift 2 ;;
     plan|prepare-native|record-native|publish) release_command=$1; shift; break ;;
     --help|-h) usage; exit 0 ;;
@@ -53,7 +53,8 @@ esac
 case $release_command in
   plan|publish) [[ -n ${GH_REPO:-} ]] || fail 'GH_REPO is required' ;;
 esac
-version=$(version_read "$root/VERSION")
+[[ -n $version ]] || version=$(version_read "$root/VERSION")
+version_stable "$version"
 [[ $(git -C "$root" rev-parse HEAD) == "$revision" ]] || fail 'revision differs from checked-out source'
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/runtime-release.XXXXXX")
 trap 'rm -rf -- "$scratch"' EXIT
@@ -131,11 +132,15 @@ index_entries() {
   ' <<<"$1" || fail 'release index must contain exactly one executable per supported platform'
 }
 
-guard() {
-  local main tag target sha nested existing_release visited=' '
+source_guard() {
+  local main
   main=$(github git/ref/heads/main) || return 1
   [[ $(jq -r '.object.sha // ""' <<<"$main") == "$revision" ]] || fail 'a newer or different main revision exists'
-  tag=$(github "git/ref/tags/$version") || return 1
+}
+
+github_version_revision() {
+  local requested_version=${1:-$version} tag target sha nested existing_release owner='' release_revision visited=' '
+  tag=$(github "git/ref/tags/$requested_version") || return 1
   if [[ $tag != null ]]; then
     target=$(jq -c '.object' <<<"$tag") || fail 'invalid release tag'
     while [[ $(jq -r '.type' <<<"$target") == tag ]]; do
@@ -145,14 +150,26 @@ guard() {
       nested=$(github "git/tags/$sha") || return 1
       target=$(jq -c '.object' <<<"$nested") || fail 'invalid annotated release tag'
     done
-    jq -e --arg revision "$revision" '.type == "commit" and .sha == $revision' <<<"$target" >/dev/null ||
-      fail 'release version belongs to another revision'
+    jq -e '.type == "commit" and (.sha | type == "string" and test("^[0-9a-f]{40}$"))' <<<"$target" >/dev/null ||
+      fail 'invalid release tag target'
+    owner=$(jq -r '.sha' <<<"$target") || return 1
   fi
-  existing_release=$(github "releases/tags/$version") || return 1
+  existing_release=$(github "releases/tags/$requested_version") || return 1
   if [[ $existing_release != null ]]; then
-    jq -e --arg revision "$revision" '.target_commitish == $revision and (.draft | not) and (.prerelease | not)' \
-      <<<"$existing_release" >/dev/null || fail 'GitHub release belongs to another revision or is incomplete'
+    jq -e '(.target_commitish | type == "string" and test("^[0-9a-f]{40}$")) and (.draft | not) and (.prerelease | not)' \
+      <<<"$existing_release" >/dev/null || fail 'GitHub release has invalid source metadata or is incomplete'
+    release_revision=$(jq -r .target_commitish <<<"$existing_release") || return 1
+    [[ -z $owner || $owner == "$release_revision" ]] || fail 'GitHub version metadata identifies conflicting revisions'
+    owner=$release_revision
   fi
+  printf '%s\n' "$owner"
+}
+
+guard() {
+  local owner
+  source_guard || return 1
+  owner=$(github_version_revision) || return 1
+  [[ -z $owner || $owner == "$revision" ]] || fail 'release version belongs to another revision'
 }
 
 published() {
@@ -185,26 +202,83 @@ published() {
   printf '%s\n' "$manifest"
 }
 
-prior_latest_version() {
-  local manifest=$1 prior_version prior_revision entries pin metadata build='' candidate native_platform
-  prior_version=$(jq -r '.annotations["org.opencontainers.image.version"] // ""' <<<"$manifest") || fail 'invalid latest metadata'
-  prior_revision=$(jq -r '.annotations["org.opencontainers.image.revision"] // ""' <<<"$manifest") || fail 'invalid latest metadata'
-  if [[ -z $prior_version || -z $prior_revision ]]; then
-    # Older indexes kept metadata in image labels. Compare the actual labels
-    # from both platforms before ordering the first schema-2 release.
-    entries=$(index_entries "$manifest") || return 1
-    for native_platform in linux/amd64 linux/arm64; do
-      pin=$(jq -r --arg platform "$native_platform" '.[$platform]' <<<"$entries") || fail 'invalid latest index'
-      metadata=$(inspect "$image@$pin" Image) || return 1
-      candidate=$(jq -c '[.config.Labels["org.opencontainers.image.version"],.config.Labels["org.opencontainers.image.revision"]]' <<<"$metadata") || fail 'invalid latest image metadata'
-      [[ -z $build || $candidate == "$build" ]] || fail 'latest platforms do not identify one source build'
-      build=$candidate
-    done
-    prior_version=$(jq -r '.[0]' <<<"$build") prior_revision=$(jq -r '.[1]' <<<"$build")
+index_identity() {
+  local manifest=$1 entries pin metadata identity='' candidate native_platform identity_version identity_revision
+  jq -e '.schemaVersion == 2 and
+    (.mediaType == "application/vnd.oci.image.index.v1+json" or .mediaType == "application/vnd.docker.distribution.manifest.list.v2+json")' \
+    <<<"$manifest" >/dev/null || fail 'invalid release index format'
+  valid_digest "$(jq -r .digest <<<"$manifest")" >/dev/null || return 1
+  entries=$(index_entries "$manifest") || return 1
+  # Both platform labels must agree, including for older indexes without annotations.
+  for native_platform in linux/amd64 linux/arm64; do
+    pin=$(jq -r --arg platform "$native_platform" '.[$platform]' <<<"$entries") || return 1
+    metadata=$(inspect "$image@$pin" Image) || return 1
+    jq -e --arg platform "$native_platform" '.os + "/" + .architecture == $platform' <<<"$metadata" >/dev/null || fail 'release index platform mismatch'
+    candidate=$(jq -c '{version:.config.Labels["org.opencontainers.image.version"],revision:.config.Labels["org.opencontainers.image.revision"]}' <<<"$metadata") || return 1
+    [[ -z $identity || $candidate == "$identity" ]] || fail 'release platforms do not identify one source build'
+    identity=$candidate
+  done
+  identity_version=$(jq -r .version <<<"$identity") identity_revision=$(jq -r .revision <<<"$identity")
+  version_stable "$identity_version" || return 1
+  [[ $identity_revision =~ ^[0-9a-f]{40}$ ]] || fail 'release source metadata cannot be ordered safely'
+  jq -e --arg version "$identity_version" --arg revision "$identity_revision" '
+    (if has("annotations") then .annotations else {} end) as $annotations |
+    ($annotations | type == "object") and
+    (($annotations | has("org.opencontainers.image.version") | not) or $annotations["org.opencontainers.image.version"] == $version) and
+    (($annotations | has("org.opencontainers.image.revision") | not) or $annotations["org.opencontainers.image.revision"] == $revision)
+  ' <<<"$manifest" >/dev/null || fail 'release annotations disagree with native images'
+  printf '%s\n' "$identity"
+}
+
+plan_release() {
+  local latest latest_identity latest_version='' latest_revision='' latest_owner latest_manifest manifest identity owner registry_owner selected published_version=false
+  source_guard || return 1
+  latest=$(inspect "$image:latest" Manifest true) || return 1
+  if [[ $latest != null ]]; then
+    latest_identity=$(index_identity "$latest") || return 1
+    latest_version=$(jq -r .version <<<"$latest_identity") latest_revision=$(jq -r .revision <<<"$latest_identity")
+    # Validate the observed latest even when VERSION requests a higher release line.
+    latest_owner=$(github_version_revision "$latest_version") || return 1
+    [[ -z $latest_owner || $latest_owner == "$latest_revision" ]] || fail 'latest and GitHub version owners disagree'
+    latest_manifest=$(inspect "$image:$latest_version" Manifest true) || return 1
+    if [[ $latest_manifest != null ]]; then
+      identity=$(index_identity "$latest_manifest") || return 1
+      [[ $(jq -r .version <<<"$identity") == "$latest_version" && $(jq -r .revision <<<"$identity") == "$latest_revision" ]] || fail 'latest and immutable version owners disagree'
+    fi
+    if [[ $latest_revision == "$revision" ]]; then
+      [[ $latest_manifest != null && $(jq -r .digest <<<"$latest_manifest") == "$(jq -r .digest <<<"$latest")" ]] || fail 'latest has no matching immutable version index'
+    fi
+    if [[ $(version_compare "$version" "$latest_version") == -1 ]]; then version=$latest_version; fi
   fi
-  [[ $prior_revision =~ ^[0-9a-f]{40}$ ]] || fail 'latest source metadata cannot be ordered safely'
-  version_stable "$prior_version" || return 1
-  printf '%s\n' "$prior_version"
+  while true; do
+    owner=$(github_version_revision) || return 1
+    manifest=$(inspect "$image:$version" Manifest true) || return 1
+    if [[ $manifest != null ]]; then
+      identity=$(index_identity "$manifest") || return 1
+      [[ $(jq -r .version <<<"$identity") == "$version" ]] || fail 'version tag disagrees with native image versions'
+      registry_owner=$(jq -r .revision <<<"$identity") || return 1
+      [[ -z $owner || $owner == "$registry_owner" ]] || fail 'GitHub and registry version owners disagree'
+      owner=$registry_owner
+    fi
+    if [[ $version == "$latest_version" ]]; then
+      [[ -z $owner || $owner == "$latest_revision" ]] || fail 'latest and version owners disagree'
+      owner=$latest_revision
+      if [[ $owner == "$revision" ]]; then
+        [[ $manifest != null && $(jq -r .digest <<<"$manifest") == "$(jq -r .digest <<<"$latest")" ]] || fail 'latest has no matching immutable version index'
+      fi
+    fi
+    if [[ -z $owner || $owner == "$revision" ]]; then
+      guard || return 1
+      if [[ $manifest != null ]]; then
+        selected=$(published) || return 1
+        [[ $selected != null && $(jq -r .digest <<<"$selected") == "$(jq -r .digest <<<"$manifest")" ]] || fail 'selected release index changed during planning'
+        published_version=true
+      fi
+      jq -cnS --arg version "$version" --argjson published "$published_version" '{version:$version,published:$published}'
+      return
+    fi
+    version=$(version_next_patch "$version") || return 1
+  done
 }
 
 native_ref() { printf '%s:build-%s-%s-%s\n' "$image" "$version" "$revision" "${1#linux/}"; }
@@ -309,7 +383,7 @@ publish_index() {
 }
 
 publish_release() {
-  local manifest pin existing_release latest latest_version compared latest_pin
+  local manifest pin existing_release latest latest_identity latest_version compared latest_pin
   guard || return 1
   manifest=$(publish_index) || return 1
   pin=$(valid_digest "$(jq -r '.digest' <<<"$manifest")") || return 1
@@ -327,7 +401,8 @@ publish_release() {
   latest=$(inspect "$image:latest" Manifest true) || return 1
   latest_pin=''
   if [[ $latest != null ]]; then
-    latest_version=$(prior_latest_version "$latest") || return 1
+    latest_identity=$(index_identity "$latest") || return 1
+    latest_version=$(jq -r .version <<<"$latest_identity") || return 1
     compared=$(version_compare "$latest_version" "$version") || return 1
     [[ $compared != 1 ]] || fail 'latest is newer or cannot be ordered safely'
     latest_pin=$(jq -r '.digest' <<<"$latest") || fail 'invalid latest digest'
@@ -345,11 +420,7 @@ publish_release() {
 
 case $release_command in
   plan)
-    guard
-    manifest=$(published)
-    is_published=false
-    [[ $manifest == null ]] || is_published=true
-    result=$(jq -cnS --arg version "$version" --argjson published "$is_published" '{version:$version,published:$published}')
+    result=$(plan_release)
     ;;
   prepare-native) result=$(prepare_native) ;;
   record-native) result=$(record_native) ;;

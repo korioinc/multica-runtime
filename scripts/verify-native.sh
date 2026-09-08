@@ -31,9 +31,6 @@ cp -Rn /opt/multica/runtime/home-seed/. "$HOME/"
 find "$HOME" -type d -exec chmod 0700 {} +
 find "$HOME" -type f -exec chmod 0600 {} +
 pin() { sed -n "s/^$1=//p" "$inventory/versions.env"; }
-while IFS='=' read -r package expected; do
-  [[ $(dpkg-query -W -f='${Version}' "$package") == "$expected" ]] || { echo "Installed Debian package differs from lock: $package" >&2; exit 1; }
-done < "$inventory/apt.lock"
 probe() {
   local name=$1 expected=$2
   shift 2

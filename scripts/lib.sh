@@ -36,40 +36,27 @@ runtime_npm_dependencies() {
       "pi-openai-service-tier": .PI_OPENAI_SERVICE_TIER_VERSION,
       "@dietrichgebert/ponytail": .PI_PONYTAIL_VERSION,
       "pi-cache-optimizer": .PI_CACHE_OPTIMIZER_VERSION
-    } else error("Unknown npm group") end'
+    } else error("Unknown npm group") end
+    | if all(.[]; type == "string") then . else error("Missing npm version") end'
 }
-runtime_npm_manifests() {
-  local group deps
-  for group in providers pi-packages; do
-    deps=$(runtime_npm_dependencies "$group")
-    mkdir -p "$runtime_root/build/npm/$group"
-    jq -n --arg name "multica-runtime-$group" --argjson deps "$deps" \
-      '{name:$name,private:true,version:"1.0.0",dependencies:$deps}' > "$runtime_root/build/npm/$group/package.json"
-  done
+runtime_npm_manifest() {
+  local group=$1 deps
+  deps=$(runtime_npm_dependencies "$group")
+  jq -n --arg name "multica-runtime-$group" --argjson deps "$deps" \
+    '{name:$name,private:true,version:"1.0.0",dependencies:$deps}'
 }
 runtime_check_inputs() {
-  local production=${1:-} inputs base group deps arch file expected
+  local production=${1:-} inputs base group
   inputs=$(runtime_versions_json)
   base=$(jq -r .CONTROLLER_BASE_IMAGE_REF <<< "$inputs")
-  if [[ "$production" == --production && ! "$base" =~ ^[^[:space:]]+@sha256:[a-f0-9]{64}$ ]]; then
-    echo 'No published ABI 2 base is pinned; set CONTROLLER_BASE_IMAGE_REF or explicitly use local --base-image' >&2
+  if [[ "$production" == --production && ! "$base" =~ ^[^[:space:]@]+:[0-9]+\.[0-9]+\.[0-9]+$ && ! "$base" =~ ^[^[:space:]]+@sha256:[a-f0-9]{64}$ ]]; then
+    echo 'CONTROLLER_BASE_IMAGE_REF must use a release version tag (IMAGE:MAJOR.MINOR.PATCH) or SHA-256 digest; use --base-image for local builds' >&2
     return 1
   fi
   for group in providers pi-packages; do
-    deps=$(runtime_npm_dependencies "$group")
-    jq -e --argjson deps "$deps" '.dependencies == $deps' "$runtime_root/build/npm/$group/package.json" >/dev/null
-    jq -e --argjson deps "$deps" '.packages[""].dependencies == $deps and (.packages | to_entries | all(.key == "" or (.value.version != null and .value.integrity != null)))' \
-      "$runtime_root/build/npm/$group/package-lock.json" >/dev/null
+    runtime_npm_dependencies "$group" >/dev/null
   done
-  expected="oci-cli==$(jq -r .OCI_CLI_VERSION <<< "$inputs")"
-  [[ "$(cat "$runtime_root/build/python/oci.in")" == "$expected" ]]
-  grep -Fx "$expected \\" "$runtime_root/locks/python-oci.lock" >/dev/null || { echo 'OCI direct version differs from Python lock' >&2; return 1; }
-  for arch in amd64 arm64; do
-    file="$runtime_root/locks/downloads-$arch.json"
-    jq -e --argjson versions "$inputs" '
-      ((.versions | del(.CONTROLLER_BASE_IMAGE_REF)) == ($versions | del(.CONTROLLER_BASE_IMAGE_REF))) and
-      (.artifacts | all((.url | startswith("https://")) and (.sha256 | test("^[a-f0-9]{64}$"))))' "$file" >/dev/null
-    [[ -s "$runtime_root/locks/apt-$arch.lock" ]]
-  done
-  [[ -s "$runtime_root/locks/python-oci.lock" ]]
+  jq -er .OCI_CLI_VERSION <<< "$inputs" >/dev/null
+  jq -e '(.DEBIAN_SNAPSHOT | test("^[0-9]{8}T[0-9]{6}Z$")) and .DEBIAN_CODENAME == "bookworm"' <<< "$inputs" >/dev/null
+  [[ -s "$runtime_root/build/apt-packages.txt" ]]
 }

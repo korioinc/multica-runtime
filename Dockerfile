@@ -3,19 +3,16 @@ ARG CONTROLLER_BASE_IMAGE_REF
 
 FROM scratch AS os-input
 COPY versions.env /versions.env
-COPY locks/apt-*.lock /locks/
+COPY build/apt-packages.txt /build/apt-packages.txt
 COPY scripts/install-os.sh /scripts/install-os.sh
 
 FROM scratch AS language-input
 COPY versions.env /versions.env
-COPY locks/downloads-*.json /locks/
-COPY scripts/install-common.sh scripts/install-languages.sh /scripts/
+COPY scripts/downloads.sh scripts/install-common.sh scripts/install-languages.sh /scripts/
 
 FROM scratch AS package-input
 COPY versions.env /versions.env
-COPY locks/downloads-*.json locks/python-oci.lock /locks/
-COPY build/npm /build/npm
-COPY scripts/install-common.sh scripts/install-packages.sh /scripts/
+COPY scripts/lib.sh scripts/downloads.sh scripts/install-common.sh scripts/install-packages.sh /scripts/
 
 FROM scratch AS descriptor-input
 COPY versions.env /versions.env

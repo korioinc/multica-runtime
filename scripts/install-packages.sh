@@ -22,7 +22,7 @@ export PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # --- npm: AI agents and Pi extensions ---
 # providers: @openai/codex, @earendil-works/pi-coding-agent, chrome-devtools-mcp, corepack.
-# pi-packages: pi-mcp-adapter, pi-thinking-level, pi-web-access, pi-openai-service-tier,
+# pi-packages: pi-mcp-adapter, pi-web-access, pi-openai-service-tier,
 # @dietrichgebert/ponytail, pi-cache-optimizer. Resolve dependencies for the versions in versions.env.
 for group in providers pi-packages; do
   prefix="$tools/$group"

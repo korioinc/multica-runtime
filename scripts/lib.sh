@@ -31,7 +31,6 @@ runtime_npm_dependencies() {
       "corepack": .COREPACK_VERSION
     } elif $group == "pi-packages" then {
       "pi-mcp-adapter": .PI_MCP_ADAPTER_VERSION,
-      "pi-thinking-level": .PI_THINKING_LEVEL_VERSION,
       "pi-web-access": .PI_WEB_ACCESS_VERSION,
       "pi-openai-service-tier": .PI_OPENAI_SERVICE_TIER_VERSION,
       "@dietrichgebert/ponytail": .PI_PONYTAIL_VERSION,

@@ -43,7 +43,6 @@ and recreate Pods with the new image to apply changes to the system profile.
 ## Pi Packages
 
 - `pi-mcp-adapter`
-- `pi-thinking-level`
 - `pi-web-access`
 - `pi-openai-service-tier`
 - `@dietrichgebert/ponytail`

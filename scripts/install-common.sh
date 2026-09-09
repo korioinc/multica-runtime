@@ -19,7 +19,7 @@ done <<< "$installation_inputs"
 scratch=$(mktemp -d)
 trap 'rm -rf -- "$scratch"' EXIT HUP INT TERM
 mkdir -p "$tools/bin" /var/cache/multica-downloads
-export PATH="$tools/bin:$tools/node/bin:$tools/php/bin:$tools/rust/bin:$tools/providers/node_modules/.bin:$tools/oci/bin:$tools/google-cloud-sdk/bin:/usr/local/go/bin:$PATH"
+export PATH="$tools/bin:$tools/node/bin:$tools/php/bin:$tools/rust/bin:$tools/providers/node_modules/.bin:$tools/google-cloud-sdk/bin:/usr/local/go/bin:$PATH"
 
 # --- Versioned downloads and shared cache ---
 # Reuse complete downloads by URL; publish cached files only after curl succeeds.

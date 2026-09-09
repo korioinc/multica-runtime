@@ -10,7 +10,6 @@
     "/opt/multica/tools/php/bin",
     "/opt/multica/tools/rust/bin",
     "/opt/multica/tools/providers/node_modules/.bin",
-    "/opt/multica/tools/oci/bin",
     "/opt/multica/tools/google-cloud-sdk/bin",
     "/usr/local/go/bin",
     "/usr/local/sbin",
@@ -40,7 +39,14 @@
     "OCI_CLI_CONFIG_FILE": "${HOME}/.oci/config",
     "CBM_CACHE_DIR": "${HOME}/.cache/codebase-memory-mcp",
     "CBM_RUNTIME_DIR": "${HOME}/.cache/codebase-memory-mcp",
-    "PI_TELEMETRY": "0"
+    "PI_TELEMETRY": "0",
+    "DISPLAY": ":99",
+    "XDG_RUNTIME_DIR": "/tmp/multica-desktop",
+    "DBUS_SESSION_BUS_ADDRESS": "unix:path=/tmp/multica-desktop/bus",
+    "XAUTHORITY": "/tmp/multica-desktop/Xauthority",
+    "XDG_SESSION_TYPE": "x11",
+    "GDK_BACKEND": "x11",
+    "NO_AT_BRIDGE": "0"
   },
   "homeSeed": "/opt/multica/runtime/home-seed"
 }

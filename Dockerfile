@@ -22,12 +22,18 @@ COPY scripts/lib.sh scripts/downloads.sh scripts/install-common.sh scripts/insta
 
 FROM scratch AS package-input
 COPY --from=projected-input /projected-input/packages/versions.env /versions.env
+COPY build/fd.sha256 /build/fd.sha256
 COPY scripts/lib.sh scripts/downloads.sh scripts/install-common.sh scripts/install-packages.sh /scripts/
 
 FROM scratch AS descriptor-input
 COPY versions.env /versions.env
 COPY build/layout.json /build/layout.json
 COPY scripts/finalize-image.sh scripts/render-path-profile.sh /scripts/
+
+FROM scratch AS desktop-input
+COPY --from=projected-input /projected-input/desktop/versions.env /versions.env
+COPY build/desktop-apt-packages.txt build/cua-driver.sha256 build/google-chrome.sha256 build/desktop-supervisord.conf /build/
+COPY scripts/lib.sh scripts/downloads.sh scripts/install-common.sh scripts/install-desktop.sh scripts/runtime-entrypoint.sh /scripts/
 
 FROM scratch AS verification-input
 COPY scripts/verify-source.sh scripts/verify-native.sh scripts/verify-adapter.sh scripts/verify-providers.sh /scripts/
@@ -50,6 +56,12 @@ RUN --mount=from=package-input,target=/build-input,readonly \
     --mount=type=tmpfs,target=/home/multica/agents \
     --mount=type=cache,id=multica-runtime-downloads,target=/var/cache/multica-downloads,sharing=locked \
     /bin/bash /build-input/scripts/install-packages.sh
+RUN --mount=from=desktop-input,target=/build-input,readonly \
+    --mount=type=tmpfs,target=/home/multica/agents \
+    --mount=type=cache,id=multica-runtime-apt-$TARGETARCH,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=multica-runtime-apt-lists-$TARGETARCH,target=/var/lib/apt/lists,sharing=locked \
+    --mount=type=cache,id=multica-runtime-downloads,target=/var/cache/multica-downloads,sharing=locked \
+    /bin/bash /build-input/scripts/install-desktop.sh
 # Login shells reset ENV PATH via /etc/profile, including agent tool calls in
 # task-worker Pods. Install outside HOME and independently of the entrypoint.
 RUN --mount=from=descriptor-input,target=/build-input,readonly \
@@ -57,13 +69,21 @@ RUN --mount=from=descriptor-input,target=/build-input,readonly \
     mkdir -p /etc/profile.d && \
     /bin/bash /build-input/scripts/render-path-profile.sh /build-input/build/layout.json > /etc/profile.d/10-multica-path.sh && \
     chmod 0644 /etc/profile.d/10-multica-path.sh
-ENV PATH="/opt/multica/tools/bin:/opt/multica/tools/node/bin:/opt/multica/tools/php/bin:/opt/multica/tools/rust/bin:/opt/multica/tools/providers/node_modules/.bin:/opt/multica/tools/oci/bin:/opt/multica/tools/google-cloud-sdk/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+ENV PATH="/opt/multica/tools/bin:/opt/multica/tools/node/bin:/opt/multica/tools/php/bin:/opt/multica/tools/rust/bin:/opt/multica/tools/providers/node_modules/.bin:/opt/multica/tools/google-cloud-sdk/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     HOME=/home/multica/agents \
     GOTOOLCHAIN=local \
     CLOUDSDK_PYTHON=/usr/bin/python3 \
     CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK=1 \
     CLOUDSDK_CORE_DISABLE_USAGE_REPORTING=true \
-    PI_TELEMETRY=0
+    PI_TELEMETRY=0 \
+    DISPLAY=:99 \
+    MULTICA_DESKTOP_SCREEN=2560x1440x24 \
+    XDG_RUNTIME_DIR=/tmp/multica-desktop \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=/tmp/multica-desktop/bus" \
+    XAUTHORITY=/tmp/multica-desktop/Xauthority \
+    XDG_SESSION_TYPE=x11 \
+    GDK_BACKEND=x11 \
+    NO_AT_BRIDGE=0
 
 FROM installed AS prepared
 ARG CONTROLLER_BASE_IMAGE_REF
@@ -83,7 +103,7 @@ LABEL org.opencontainers.image.title="Multica Runtime" \
       io.multica.image-build-id="${IMAGE_BUILD_ID}" \
       io.multica.controller-abi="2"
 USER 65532:65532
-ENTRYPOINT ["/opt/multica/controller/runtime"]
+ENTRYPOINT ["/opt/multica/runtime/entrypoint"]
 CMD ["controller"]
 
 FROM prepared AS adapter-verify

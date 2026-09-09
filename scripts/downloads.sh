@@ -27,6 +27,7 @@ download_url() {
     rust) printf 'https://static.rust-lang.org/dist/rust-%s-%s-unknown-linux-gnu.tar.xz\n' "${RUST_VERSION:?RUST_VERSION is required}" "$cpu" ;;
 
     # --- Developer CLIs and MCP tools ---
+    fd) printf 'https://github.com/sharkdp/fd/releases/download/v%s/fd-v%s-%s-unknown-linux-gnu.tar.gz\n' "${FD_VERSION:?FD_VERSION is required}" "$FD_VERSION" "$cpu" ;;
     multica) printf 'https://github.com/multica-ai/multica/releases/download/v%s/multica-cli-%s-linux-%s.tar.gz\n' "${MULTICA_CLI_VERSION:?MULTICA_CLI_VERSION is required}" "$MULTICA_CLI_VERSION" "$target_arch" ;;
     gh) printf 'https://github.com/cli/cli/releases/download/v%s/gh_%s_linux_%s.tar.gz\n' "${GH_VERSION:?GH_VERSION is required}" "$GH_VERSION" "$target_arch" ;;
     k9s) printf 'https://github.com/derailed/k9s/releases/download/v%s/k9s_Linux_%s.tar.gz\n' "${K9S_VERSION:?K9S_VERSION is required}" "$target_arch" ;;
@@ -37,6 +38,8 @@ download_url() {
     lefthook) printf 'https://github.com/evilmartians/lefthook/releases/download/v%s/lefthook_%s_Linux_%s\n' "${LEFTHOOK_VERSION:?LEFTHOOK_VERSION is required}" "$LEFTHOOK_VERSION" "$kctx" ;;
     uv) printf 'https://github.com/astral-sh/uv/releases/download/%s/uv-%s-unknown-linux-gnu.tar.gz\n' "${UV_VERSION:?UV_VERSION is required}" "$cpu" ;;
     cbm) printf 'https://github.com/DeusData/codebase-memory-mcp/releases/download/v%s/codebase-memory-mcp-linux-%s-portable.tar.gz\n' "${CODEBASE_MEMORY_MCP_VERSION:?CODEBASE_MEMORY_MCP_VERSION is required}" "$target_arch" ;;
+    cua-driver) printf 'https://github.com/trycua/cua/releases/download/cua-driver-rs-v%s/cua-driver-rs-%s-linux-%s-binary.tar.gz\n' "${CUA_DRIVER_VERSION:?CUA_DRIVER_VERSION is required}" "$CUA_DRIVER_VERSION" "$kctx" ;;
+    google-chrome) printf 'https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_%s_%s.deb\n' "${GOOGLE_CHROME_VERSION:?GOOGLE_CHROME_VERSION is required}" "$target_arch" ;;
 
     # --- Cloud CLIs ---
     aws) printf 'https://awscli.amazonaws.com/awscli-exe-linux-%s-%s.zip\n' "$cpu" "${AWS_CLI_VERSION:?AWS_CLI_VERSION is required}" ;;

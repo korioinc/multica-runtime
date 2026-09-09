@@ -58,6 +58,16 @@ download gh "$scratch/gh.tar.gz"
 tar -xzf "$scratch/gh.tar.gz" -C "$scratch"
 install -m 0555 "$scratch/gh_${GH_VERSION}_linux_${arch}/bin/gh" "$tools/bin/gh"
 
+# --- File search ---
+# Bookworm's fd-find is 8.6 and exposes fdfind; use the pinned upstream fd >= 8.7.
+fd_archive=$(basename -- "$(download_url fd "$arch")")
+download fd "$scratch/$fd_archive"
+(cd "$scratch" && sha256sum --check --ignore-missing /build-input/build/fd.sha256)
+mkdir "$scratch/fd"
+tar -xzf "$scratch/$fd_archive" --strip-components=1 -C "$scratch/fd"
+install -m 0555 "$scratch/fd/fd" "$tools/bin/fd"
+"$tools/bin/fd" --version
+
 # --- Kubernetes navigation tools ---
 # k9s: terminal cluster UI; kubectx: context switching; kubens: namespace switching.
 for executable in k9s kubectx kubens; do
@@ -89,9 +99,11 @@ unzip -q "$scratch/aws.zip" -d "$scratch/aws"
 
 # --- Oracle Cloud CLI ---
 # Install the OCI CLI version from versions.env and its dependencies in a separate virtual environment.
-python3 -m venv "$tools/oci"
+/usr/bin/python3 -m venv "$tools/oci"
 "$tools/oci/bin/pip" install --no-cache-dir "oci-cli==$OCI_CLI_VERSION"
 "$tools/oci/bin/pip" check
+# Expose only the CLI. Adding its venv to PATH also shadows system python3/pip.
+ln -s ../oci/bin/oci "$tools/bin/oci"
 
 # --- Google Cloud CLI ---
 # Install the SDK and gcloud CLI for managing Google Cloud services.

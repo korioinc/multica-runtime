@@ -1,0 +1,14 @@
+at-spi2-core
+dbus-x11
+fonts-liberation
+fonts-noto-cjk
+libglib2.0-bin
+libxi6
+libxkbcommon0
+mousepad
+openbox
+supervisor
+x11-utils
+x11-xserver-utils
+xauth
+xvfb

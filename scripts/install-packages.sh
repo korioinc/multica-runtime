@@ -1,9 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 # shellcheck source=install-common.sh
-source /build-input/scripts/install-common.sh
-# shellcheck source=lib.sh
-source /build-input/scripts/lib.sh
+source /build-input/scripts/install-common.sh packages
 
 # --- Temporary installation environment ---
 # Root installers must not put caches or first-run state into the final user's
@@ -24,6 +22,8 @@ export PIP_DISABLE_PIP_VERSION_CHECK=1
 # providers: @openai/codex, @earendil-works/pi-coding-agent, chrome-devtools-mcp, corepack.
 # pi-packages: pi-mcp-adapter, pi-web-access, pi-openai-service-tier,
 # @dietrichgebert/ponytail, pi-cache-optimizer. Resolve dependencies for the versions in versions.env.
+inventory=/opt/multica/runtime/inventory
+mkdir -p "$inventory"
 for group in providers pi-packages; do
   prefix="$tools/$group"
   npm_options=()
@@ -36,6 +36,10 @@ for group in providers pi-packages; do
   mkdir -p "$prefix"
   runtime_npm_manifest "$group" > "$prefix/package.json"
   npm install --prefix "$prefix" "${npm_options[@]}" --package-lock=false --ignore-scripts --no-audit --no-fund
+  # Package identity is stable; npm's graph traversal and relationship order are not.
+  npm query --prefix "$prefix" '*' | jq -S '
+    map({name,version,location,resolved,integrity} | with_entries(select(.value != null)))
+    | sort_by(.location)' > "$inventory/npm-$group.json"
 done
 
 # --- Corepack ---
@@ -116,8 +120,7 @@ git lfs install --system
 ln -sf /usr/bin/python3 "$tools/bin/python"
 
 # --- Installation records ---
-# Copy the version inputs into the image to track installed tools.
-mkdir -p /opt/multica/runtime/inventory
-cp /build-input/versions.env /opt/multica/runtime/inventory/versions.env
+# Record resolved dependencies; the prepared stage records full public inputs.
+"$tools/oci/bin/pip" list --format=json > "$inventory/python-oci.json"
 # Read-only installation prefixes; runtime cache/config belongs to private HOME.
 chmod -R a-w "$tools"

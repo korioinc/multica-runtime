@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 # shellcheck source=install-common.sh
-source /build-input/scripts/install-common.sh
+source /build-input/scripts/install-common.sh languages
 
 # --- Node.js / npm ---
 # Install the JavaScript runtime and its bundled npm package manager.

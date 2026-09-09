@@ -4,8 +4,8 @@ set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 case "${1:-}" in
   json) runtime_versions_json ;;
-  env) runtime_versions_env ;;
+  env) runtime_versions_env "${2:-all}" ;;
   npm-manifest) runtime_npm_manifest "${2:-}" ;;
   check) runtime_check_inputs "${2:-}"; echo 'Build inputs are valid' ;;
-  *) echo 'Usage: inputs.sh json|env|npm-manifest GROUP|check [--production]' >&2; exit 2 ;;
+  *) echo 'Usage: inputs.sh json|env [all|controller|os|languages|packages]|npm-manifest GROUP|check [--production]' >&2; exit 2 ;;
 esac

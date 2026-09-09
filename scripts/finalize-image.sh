@@ -25,7 +25,7 @@ for parent in /opt /opt/multica /home /home/multica; do
 done
 
 tool_path=$(jq -er '.binDirs | join(":")' "$root/build/layout.json")
-export PATH="$tool_path"
+[[ "$PATH" == "$tool_path" ]] || { echo 'Image ENV PATH differs from the controller tool paths' >&2; exit 1; }
 get_pin() { sed -n "s/^$1=//p" "$root/versions.env"; }
 metadata() {
   local path=$1 expected=$2 resolved actual checksum
@@ -55,6 +55,9 @@ if find "$seed" -type b -o -type c -o -type p -o -type s | grep -q .; then
   echo 'Image home seed contains unsupported entries' >&2; exit 1
 fi
 mkdir -p /opt/multica/runtime
+# Installation stages consume subsets; provenance retains the exact public input.
+mkdir -p /opt/multica/runtime/inventory
+cp "$root/versions.env" /opt/multica/runtime/inventory/versions.env
 jq -n --arg id "$build_id" --arg platform "$platform" \
   --slurpfile controller "$contract" --slurpfile daemon "$scratch/daemon.json" \
   --slurpfile providers "$scratch/providers.json" --slurpfile layout "$root/build/layout.json" '

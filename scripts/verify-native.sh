@@ -22,6 +22,8 @@ for parent in / /home /home/multica /run; do
 done
 scratch=$(mktemp -d /tmp/runtime-native.XXXXXX)
 trap 'rm -rf -- "$scratch"' EXIT
+# Prepare the direct tool probes. This fixture interpolation does not validate
+# the controller's Vars implementation; the controller-owned adapter suite does.
 while IFS= read -r -d '' key && IFS= read -r -d '' value; do export "$key=$value"; done < <(
   jq -j --arg home "$HOME" --arg temporary /tmp --arg workspace /workspace '
     .env | to_entries[] | .key, "\u0000", (.value | split("${HOME}") | join($home) |
@@ -34,7 +36,9 @@ tool_path=$(jq -r '.binDirs[]' "$descriptor" | while IFS= read -r directory; do 
 export PATH="$tool_path"
 if [[ "$initialized_home" == false ]]; then
   # Prepared images have no admission verification report yet, so home-layout
-  # cannot run here. Match its private copy permissions, retaining owner execute.
+  # cannot run here. Seed only this disposable probe HOME, retaining owner execute.
+  # Final-image verification must instead exercise controller home layout and
+  # pass --initialized-home; it must not use this admission bootstrap shortcut.
   cp -Rn /opt/multica/runtime/home-seed/. "$HOME/"
   find "$HOME" -type d -exec chmod 0700 {} +
   find "$HOME" -type f -exec chmod u+rw,go-rwx {} +

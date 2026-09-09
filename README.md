@@ -129,11 +129,10 @@ process sandbox and requires container isolation. Allocate sufficient `/dev/shm`
 (for example, Docker `--shm-size=1g`, or a memory-backed Kubernetes volume).
 
 The deployment must preserve the image entrypoint for this startup sequence.
-The pinned controller `0.3.44` currently overrides the worker Pod's `command`
-with `runtime worker serve`, which bypasses image initialization. Worker startup
-must use the image entrypoint with `args: [worker, serve]`, and the controller's
-Pod validation must accept that shape. Until that controller change is released
-and selected, image-only initialization does not prepare those worker desktops.
+Controller `0.3.45` starts worker Pods with `args: [worker, serve]` and preserves
+the image entrypoint; its Pod validation requires that shape. Select `0.3.45`
+or a compatible newer controller. Older controllers that override the worker
+Pod's `command` bypass desktop initialization.
 
 The driver starts in the task-worker Pod when the caller runs its CLI/service/MCP
 workflow after the worker's HOME initialization. Follow the

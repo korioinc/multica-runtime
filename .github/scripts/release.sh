@@ -61,27 +61,49 @@ trap 'rm -rf -- "$scratch"' EXIT
 revision_label=org.opencontainers.image.revision
 version_label=org.opencontainers.image.version
 
+capture_command() { "$@" >"$scratch/stdout" 2>"$scratch/stderr"; }
+
+command_failure() {
+  local operation=$1 code=$2 stream
+  printf 'release blocked: %s: %s (command exit %s)\n' "$release_command" "$operation" "$code" >&2
+  for stream in stdout stderr; do
+    if [[ -s $scratch/$stream ]]; then
+      printf '%s:\n' "$stream" >&2
+      cat "$scratch/$stream" >&2 || true
+      printf '\n' >&2
+    fi
+  done
+  # A command can commit a remote write and still fail before acknowledging it.
+  printf 'Completed steps may persist; inspect remote state before retrying.\n' >&2
+  exit 1
+}
+
 run_command() {
-  "$@" >"$scratch/stdout" 2>"$scratch/stderr" || fail "$1 $2 failed; no release promotion performed"
+  local operation=$1
+  shift
+  capture_command "$@" || command_failure "$operation failed" "$?"
   cat "$scratch/stdout" || fail 'cannot read command output'
 }
 
 github() {
-  local response header body status code
-  if response=$(gh api --include "repos/$GH_REPO/$1" 2>"$scratch/stderr"); then code=0; else code=$?; fi
+  local response header body status code operation="GitHub lookup $1"
+  if capture_command gh api --include "repos/$GH_REPO/$1"; then code=0; else code=$?; fi
+  response=$(cat "$scratch/stdout") || fail 'cannot read GitHub response'
   response=${response//$'\r'/}
-  [[ $response == *$'\n\n'* ]] || fail 'GitHub returned an unreadable response'
+  [[ $response == *$'\n\n'* ]] || command_failure "$operation returned an unreadable response" "$code"
   header=${response%%$'\n\n'*} body=${response#*$'\n\n'}
-  [[ $header =~ ^HTTP/[0-9.]+\ ([0-9]{3}) ]] || fail 'GitHub returned an unreadable response'
+  [[ $header =~ ^HTTP/[0-9.]+\ ([0-9]{3}) ]] || command_failure "$operation returned an unreadable response" "$code"
   status=${BASH_REMATCH[1]}
   if [[ $status == 404 ]]; then printf 'null\n'; return; fi
-  [[ $status == 200 && $code == 0 ]] || fail 'GitHub lookup failed'
-  jq -ce 'if type == "object" then . else error("invalid GitHub object") end' <<<"$body" || fail 'invalid GitHub object'
+  [[ $status == 200 && $code == 0 ]] || command_failure "$operation failed (HTTP $status)" "$code"
+  jq -ce 'if type == "object" then . else error("invalid GitHub object") end' <<<"$body" ||
+    command_failure "$operation returned an invalid object" "$code"
 }
 
 inspect() {
-  local ref=$1 field=${2:-Manifest} optional=${3:-false} result error
-  if ! result=$(docker buildx imagetools inspect "$ref" --format "{{json .$field}}" 2>"$scratch/stderr"); then
+  local ref=$1 field=${2:-Manifest} optional=${3:-false} result error code
+  if capture_command docker buildx imagetools inspect "$ref" --format "{{json .$field}}"; then code=0; else code=$?; fi
+  if [[ $code != 0 ]]; then
     error=$(cat "$scratch/stderr") || fail 'cannot read registry error'
     # An auth, transport or server failure never means the artifact is absent.
     if [[ $optional == true ]] && jq -en --arg error "$error" --arg ref "$ref" '
@@ -89,9 +111,11 @@ inspect() {
       ($message | test("manifest unknown|manifest_unknown")) or
       ($message | split($ref + ": not found")[1:] | any(. == "" or test("^\\s")))
     ' >/dev/null; then printf 'null\n'; return; fi
-    fail 'registry lookup failed'
+    command_failure "registry lookup $ref ($field) failed" "$code"
   fi
-  jq -ce 'if type == "object" then . else error("invalid registry object") end' <<<"$result" || fail 'invalid registry object'
+  result=$(cat "$scratch/stdout") || fail 'cannot read registry response'
+  jq -ce 'if type == "object" then . else error("invalid registry object") end' <<<"$result" ||
+    command_failure "registry lookup $ref ($field) returned an invalid object" "$code"
 }
 
 image_metadata() {
@@ -297,7 +321,7 @@ verify_local_bytes() {
       # Classic Docker stores a config digest in Id. Containerd image stores use
       # OCI manifest/index identity, described by the Descriptor field above.
       local_digest=$(jq -er '.[0].Id' <<< "$local_image") || return 1
-      raw=$(run_command docker buildx imagetools inspect "$image@$pin" --raw) || return 1
+      raw=$(run_command 'read native manifest' docker buildx imagetools inspect "$image@$pin" --raw) || return 1
       expected=$(jq -er '.config.digest' <<< "$raw") || return 1 ;;
     *) fail 'unsupported local image descriptor' ;;
   esac
@@ -312,8 +336,8 @@ prepare_native() {
   if [[ $manifest != null ]]; then
     pin=$(native_digest "$manifest" "$platform") || return 1
     image_metadata "$image@$pin" "$platform" || return 1
-    run_command docker pull "$image@$pin" >/dev/null || return 1
-    run_command docker tag "$image@$pin" "$ref" >/dev/null || return 1
+    run_command 'pull reusable native image' docker pull "$image@$pin" >/dev/null || return 1
+    run_command 'tag reusable native image' docker tag "$image@$pin" "$ref" >/dev/null || return 1
     reuse=true
   fi
   jq -cnS --arg image "$ref" --argjson reuse "$reuse" '{image:$image,reuse:$reuse}'
@@ -323,20 +347,20 @@ record_native() {
   local ref local_image existing pin manifest record
   ref=$(native_ref "$platform")
   [[ -n $controller_source ]] || fail 'matching --controller-source is required'
-  local_image=$(run_command docker image inspect "$ref") || return 1
+  local_image=$(run_command 'inspect local native image' docker image inspect "$ref") || return 1
   jq -e --arg platform "$platform" --arg revision "$revision" --arg version "$version" '
     length == 1 and (.[0] | .Os + "/" + .Architecture == $platform and
       .Config.Labels["org.opencontainers.image.revision"] == $revision and
       .Config.Labels["org.opencontainers.image.version"] == $version)
   ' <<< "$local_image" >/dev/null || fail 'local candidate does not match release metadata'
-  run_command bash "$root/scripts/verify-image.sh" --image "$ref" --controller-source "$controller_source" >/dev/null || return 1
-  local_image=$(run_command docker image inspect "$ref") || return 1
+  run_command 'verify native image' bash "$root/scripts/verify-image.sh" --image "$ref" --controller-source "$controller_source" >/dev/null || return 1
+  local_image=$(run_command 'inspect verified native image' docker image inspect "$ref") || return 1
   existing=$(inspect "$ref" Manifest true) || return 1
   if [[ $existing != null ]]; then
     pin=$(native_digest "$existing" "$platform") || return 1
     verify_local_bytes "$local_image" "$existing" "$pin" || return 1
   else
-    run_command docker push "$ref" >/dev/null || return 1
+    run_command 'push native candidate' docker push "$ref" >/dev/null || return 1
   fi
   manifest=$(inspect "$ref") || return 1
   pin=$(native_digest "$manifest" "$platform") || return 1
@@ -372,7 +396,7 @@ publish_index() {
   done
   [[ $(jq 'length' <<<"$entries") == 2 ]] || fail 'both successful native results are required'
   guard || return 1
-  run_command docker buildx imagetools create --tag "$image:$version" \
+  run_command 'publish version index' docker buildx imagetools create --tag "$image:$version" \
     --annotation "index:$revision_label=$revision" --annotation "index:$version_label=$version" \
     "$image@$(jq -r '.["linux/amd64"]' <<<"$entries")" "$image@$(jq -r '.["linux/arm64"]' <<<"$entries")" >/dev/null || return 1
   manifest=$(published) || return 1
@@ -393,7 +417,7 @@ publish_release() {
     mkdir -p -- "$records" || fail 'cannot create release result directory'
     # shellcheck disable=SC2016
     printf 'Runtime image: `%s@%s`\n\nNative platforms: linux/amd64, linux/arm64.\n' "$image" "$pin" >"$records/release-notes.md" || fail 'cannot write release notes'
-    run_command gh release create "$version" --repo "$GH_REPO" --target "$revision" --title "$version" \
+    run_command 'create GitHub release' gh release create "$version" --repo "$GH_REPO" --target "$revision" --title "$version" \
       --notes-file "$records/release-notes.md" >/dev/null || return 1
   fi
   # Workflow concurrency serializes publishers; guard again before promotion.
@@ -410,7 +434,7 @@ publish_release() {
   fi
   if [[ $latest_pin != "$pin" ]]; then
     guard || return 1
-    run_command docker buildx imagetools create --tag "$image:latest" "$image@$pin" >/dev/null || return 1
+    run_command 'promote latest index' docker buildx imagetools create --tag "$image:latest" "$image@$pin" >/dev/null || return 1
     latest=$(inspect "$image:latest") || return 1
     [[ $(jq -r '.digest' <<<"$latest") == "$pin" ]] || fail 'latest promotion did not preserve the verified index'
   fi

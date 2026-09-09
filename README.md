@@ -2,12 +2,45 @@
 
 Multica Runtime is a custom development image based on the image from [korioinc/multica-runtime-controller](https://github.com/korioinc/multica-runtime-controller). It adds the languages, package managers, and tools needed for software development.
 
+## Build Inputs and Verification
+
+`versions.env` is the public source of build versions. `scripts/lib.sh` owns the
+required keys and their installation scopes; unknown, duplicate, missing, and
+invalid values fail before installation. Inspect or validate inputs with:
+
+```sh
+scripts/inputs.sh check --production
+scripts/inputs.sh env languages
+scripts/inputs.sh npm-manifest pi-packages
+```
+
+The Dockerfile projects validated inputs into separate OS, language, and package
+files using only tools available in the controller base. Each installer consumes
+its own file, so changing a Pi package version preserves the OS and language
+installation caches. The prepared image records the exact original `versions.env`
+in `/opt/multica/runtime/inventory/versions.env`; final verification compares it
+with the checkout. Adding a tool requires assigning its version key to a scope in
+`runtime_input_keys` as well as adding its installer and execution probe.
+
+Builds progress through installation, a prepared image, controller-owned adapter
+verification, and a final image containing the verification report. Before that
+report exists, native tool probes use a disposable seeded HOME. Final image
+verification uses the controller's actual `home layout` initialization. These
+two paths have distinct bootstrap and admission responsibilities.
+
+Release failures report the operation, command exit code, and captured output on
+stderr while preserving JSON output for successful commands. A failed remote
+write may already have completed; retries inspect existing artifacts and retain
+the verified immutable bytes.
+
 ## Tool Search Paths
 
 The image sets `PATH` for direct commands and non-login shells. Login shells such as
 `bash -lc` also load `/etc/profile.d/10-multica-path.sh`, generated from the same
 `build/layout.json` tool directories used by the controller. The profile restores
 missing directories without duplicating existing entries.
+Image finalization also checks that Docker's `ENV PATH` matches the layout, so a
+new tool directory cannot silently work only through controller-managed commands.
 
 This applies to task-worker Pods with a fresh HOME volume and an overridden image
 entrypoint. Preinstalled commands such as `multica`, `codex`, `pi`, `node`, `php`,
@@ -43,7 +76,6 @@ and recreate Pods with the new image to apply changes to the system profile.
 ## Pi Packages
 
 - `pi-mcp-adapter`
-- `pi-thinking-level`
 - `pi-web-access`
 - `pi-openai-service-tier`
 - `@dietrichgebert/ponytail`
@@ -67,6 +99,21 @@ HOME seed validator allows package source directories such as `token` under
 installation. Image verification uses `npm:` references for both the first Pi
 launch and a second launch in the same HOME, including an actual MCP read.
 Final image verification initializes that HOME through the controller.
+
+## Installed Dependency Records
+
+The image stores resolved dependency inventories under
+`/opt/multica/runtime/inventory`: `debian.tsv`, `npm-providers.json`,
+`npm-pi-packages.json`, and `python-oci.json`. npm records use
+[`npm query`](https://docs.npmjs.com/cli/v11/commands/npm-query/) to inspect the
+installed package trees, including Pi's installation with host-provided peer
+APIs. They retain package names, versions, locations, and available source URLs
+and integrity hashes in a stable order. Python records use the OCI virtual
+environment's `pip list`.
+
+These records make differences between builds inspectable. Direct version pins
+and installed inventories do not lock transitive dependency resolution or promise
+byte-identical rebuilds.
 
 ## Development and System Tools
 

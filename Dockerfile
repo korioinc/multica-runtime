@@ -1,17 +1,27 @@
 # syntax=docker/dockerfile:1.7
 ARG CONTROLLER_BASE_IMAGE_REF
 
-FROM scratch AS os-input
+FROM scratch AS version-input
 COPY versions.env /versions.env
+COPY scripts/lib.sh scripts/project-inputs.sh /scripts/
+
+FROM ${CONTROLLER_BASE_IMAGE_REF} AS projected-input
+USER 0:0
+RUN --mount=from=version-input,target=/build-input,readonly \
+    --mount=type=tmpfs,target=/home/multica/agents \
+    /bin/bash /build-input/scripts/project-inputs.sh /projected-input
+
+FROM scratch AS os-input
+COPY --from=projected-input /projected-input/os/versions.env /versions.env
 COPY build/apt-packages.txt /build/apt-packages.txt
 COPY scripts/install-os.sh /scripts/install-os.sh
 
 FROM scratch AS language-input
-COPY versions.env /versions.env
-COPY scripts/downloads.sh scripts/install-common.sh scripts/install-languages.sh /scripts/
+COPY --from=projected-input /projected-input/languages/versions.env /versions.env
+COPY scripts/lib.sh scripts/downloads.sh scripts/install-common.sh scripts/install-languages.sh /scripts/
 
 FROM scratch AS package-input
-COPY versions.env /versions.env
+COPY --from=projected-input /projected-input/packages/versions.env /versions.env
 COPY scripts/lib.sh scripts/downloads.sh scripts/install-common.sh scripts/install-packages.sh /scripts/
 
 FROM scratch AS descriptor-input

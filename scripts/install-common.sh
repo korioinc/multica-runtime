@@ -4,19 +4,15 @@ set -euo pipefail
 
 # --- Shared installation paths and versions ---
 # Prepare tool paths, architecture, and pinned versions from versions.env.
+# shellcheck source=lib.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 tools=/opt/multica/tools
 arch=$(dpkg --print-architecture)
 case "$arch" in amd64|arm64) ;; *) echo 'Unsupported image architecture' >&2; exit 1 ;; esac
-seen='|'
-while IFS= read -r line || [[ -n "$line" ]]; do
-  [[ -z "$line" || "$line" == \#* ]] && continue
-  [[ "$line" =~ ^([A-Z][A-Z0-9_]*)=([A-Za-z0-9_./:@+-]*)$ ]] || { echo 'Invalid literal build input' >&2; exit 1; }
-  key=${BASH_REMATCH[1]}
-  value=${BASH_REMATCH[2]}
-  [[ "$seen" != *"|$key|"* ]] || { echo "Duplicate build input: $key" >&2; exit 1; }
-  seen+="$key|"
+installation_inputs=$(runtime_versions_env "${1:?installation input scope required}")
+while IFS='=' read -r key value; do
   export "$key=$value"
-done < /build-input/versions.env
+done <<< "$installation_inputs"
 
 # --- Temporary workspace and executable paths ---
 # Reuse the download cache and remove temporary build files on exit.

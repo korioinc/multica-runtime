@@ -1,0 +1,38 @@
+name: Tag runtime version
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+concurrency:
+  group: runtime-version-tag
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  tag:
+    if: github.event.deleted == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      BEFORE_REVISION: ${{ github.event.before }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate version tagging before making a release request
+        run: |
+          shellcheck scripts/release-lib.sh .github/scripts/*.sh scripts/verify-tag-version.sh
+          scripts/verify-tag-version.sh
+      - name: Tag the changed version and request its exact commit
+        run: >-
+          .github/scripts/tag-version.sh --root "$GITHUB_WORKSPACE"
+          --before "$BEFORE_REVISION" --revision "$GITHUB_SHA"

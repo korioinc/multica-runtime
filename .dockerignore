@@ -1,0 +1,13 @@
+.git
+.github
+.idea
+.DS_Store
+.env
+.env.*
+**/auth.json
+**/node_modules
+runtime-build
+.build
+.controller-source
+evidence
+**/__pycache__

@@ -4,15 +4,15 @@
 set -euo pipefail
 
 # Both public commands and desktop entries use this upstream launcher. Keep its
-# environment setup and exec semantics, and add the flag before caller arguments
+# environment setup and exec semantics, and add the flags before caller arguments
 # so an explicit -- separator cannot turn it into a positional argument.
 launcher=/opt/google/chrome/google-chrome
 original='exec -a "$0" "$HERE/chrome" "$@"'
 [[ $(grep -Fxc -- "$original" "$launcher") == 1 ]] || {
-  echo 'Unexpected Google Chrome launcher; cannot configure --no-sandbox' >&2
+  echo 'Unexpected Google Chrome launcher; cannot configure runtime flags' >&2
   exit 1
 }
-sed -i 's|^exec -a "\$0" "\$HERE/chrome" "\$@"$|exec -a "$0" "$HERE/chrome" --no-sandbox "$@"|' "$launcher"
+sed -i 's|^exec -a "\$0" "\$HERE/chrome" "\$@"$|exec -a "$0" "$HERE/chrome" --no-sandbox --disable-dev-shm-usage "$@"|' "$launcher"
 
 # The bundled Puppeteer resolver otherwise bypasses the launcher for stable
 # Chrome. Keep MCP's default launch on the same path without changing its CLI

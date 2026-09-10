@@ -109,11 +109,17 @@ Run `cua-driver doctor` from another shell in the same worker to check readiness
 The image installs the tools; the caller supplies its agent skills and MCP client
 registrations.
 
-The packaged Chrome launcher adds `--no-sandbox`. This disables Chrome's internal
-process sandbox, so browser sessions share the task user's access to files and
-credentials. Use `/usr/bin/google-chrome-stable` when choosing an executable
-explicitly, and allocate sufficient shared memory for browser workloads, such as
-Docker's `--shm-size=1g` or a memory-backed Kubernetes volume at `/dev/shm`.
+The packaged Chrome launcher adds `--no-sandbox` and `--disable-dev-shm-usage`.
+The former disables Chrome's internal process sandbox, so browser sessions share
+the task user's access to files and credentials. Use
+`/usr/bin/google-chrome-stable` when choosing an executable explicitly.
+
+Chrome stores its shared-memory files in writable `/tmp`. Keep this mount backed
+by disk, as in the controller's worker Pods, and account for its temporary storage,
+file cache, and I/O when sizing concurrent workers. Provide a separate
+memory-backed Kubernetes volume at `/dev/shm` capped at `256Mi` for other desktop
+tools (Docker: `--shm-size=256m`). This cap does not limit Chrome's total memory
+usage; Chrome uses `/tmp` from startup, rather than only after `/dev/shm` fills.
 
 ### Project dependencies
 

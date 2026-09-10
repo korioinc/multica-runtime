@@ -167,6 +167,12 @@ BuildKit cache mounts reuse APT packages and downloaded artifacts. The build
 script accepts repeatable `--cache-from` and `--cache-to` options. CI maintains
 separate registry caches for each architecture and exports intermediate layers.
 
+By default, builds load the image into the local Docker daemon. Pass
+`--docker-archive PATH` to export a Docker image archive for a later
+`docker load --input PATH`. CI exports the archive, removes the job's local
+BuildKit cache, then loads and deletes the archive to reduce disk usage during
+image loading. The registry caches remain available for subsequent builds.
+
 ## Verification
 
 Run source checks with ShellCheck installed:
@@ -197,9 +203,7 @@ all transitive dependencies or guarantee byte-identical rebuilds.
 ## Releases
 
 Update [VERSION](VERSION) explicitly when preparing a release. The develop → main
-PR workflow maintains one promotion PR. The separate Runtime PR CI workflow runs
-source and native image checks on pull requests targeting develop or main, keeping
-`verify` and `runtime-image` as the required checks. When GitHub Actions creates a
-new promotion PR, a maintainer must select **Approve workflows to run** on that PR
-to start its first CI run. Later developer pushes trigger CI through the PR event.
-The workflows do not change VERSION or create release-preparation commits.
+PR workflow creates one promotion PR when develop is ahead of main and no open
+promotion PR exists. Source checks and native amd64 and arm64 image verification
+run in the release workflow before publishing. The workflows do not change
+VERSION or create release-preparation commits.

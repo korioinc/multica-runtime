@@ -1,56 +1,95 @@
-name: Create develop to main PR
+name: Create develop into main PR
 
 on:
   push:
-    branches: [develop]
-  repository_dispatch:
-    types: [create-develop-to-main-pr]
-  workflow_dispatch:
+    branches:
+      - develop
 
-permissions: {}
+permissions:
+  contents: read
+  pull-requests: write
 
 concurrency:
-  group: develop-to-main-${{ github.ref }}
+  group: create-develop-to-main-pr
   cancel-in-progress: false
 
 jobs:
-  promote:
-    name: create-develop-to-main-pr
+  create-pr:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-      pull-requests: write
+    timeout-minutes: 5
     env:
-      GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Maintain one develop to main PR
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check whether develop is ahead of main
+        id: branch-state
+        shell: bash
         run: |
-          # shellcheck disable=SC2016
           set -euo pipefail
-          main_sha=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)
-          develop_sha=$(gh api "repos/$GH_REPO/git/ref/heads/develop" --jq .object.sha)
-          compare=$(gh api "repos/$GH_REPO/compare/$main_sha...$develop_sha")
-          if [ "$(jq -r .ahead_by <<<"$compare")" -eq 0 ]; then
-            echo 'develop has no commits to promote to main.' >>"$GITHUB_STEP_SUMMARY"
+
+          git fetch origin main develop
+
+          read -r main_only_commit_count develop_only_commit_count < <(
+            git rev-list --left-right --count origin/main...origin/develop
+          )
+
+          echo "main_only_commit_count=${main_only_commit_count}" >> "$GITHUB_OUTPUT"
+          echo "develop_only_commit_count=${develop_only_commit_count}" >> "$GITHUB_OUTPUT"
+
+          if [ "$develop_only_commit_count" -eq 0 ]; then
+            echo "should_create=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          prs=$(gh pr list --state open --base main --head develop \
-            --json number --limit 2)
-          count=$(jq 'length' <<<"$prs")
-          [ "$count" -le 1 ]
-          if [ "$count" -eq 0 ]; then
-            url=$(gh pr create --base main --head develop \
-              --assignee jskorlol \
-              --title 'release: merge develop into main' \
-              --body 'Merges the verified develop branch. When VERSION increases, main creates the matching tag and publishes its image and GitHub Release. VERSION is never bumped automatically.')
-            number=${url##*/}
-          else
-            number=$(jq -r '.[0].number' <<<"$prs")
+
+          echo "should_create=true" >> "$GITHUB_OUTPUT"
+
+      - name: Check for an existing PR
+        id: existing-pr
+        if: steps.branch-state.outputs.should_create == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pr_count="$(gh pr list \
+            --base main \
+            --head develop \
+            --state open \
+            --json number \
+            --jq 'length')"
+
+          if [ "$pr_count" -gt 0 ]; then
+            echo "should_create=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          pr=$(gh api "repos/$GH_REPO/pulls/$number")
-          head_sha=$(jq -r .head.sha <<<"$pr")
-          [ "$head_sha" = "$develop_sha" ]
-          printf "Promotion PR #%s targets develop '%s'.\n" \
-            "$number" "$head_sha" >>"$GITHUB_STEP_SUMMARY"
+
+          echo "should_create=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create pull request
+        if: steps.branch-state.outputs.should_create == 'true' && steps.existing-pr.outputs.should_create == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! create_output="$(
+            gh pr create \
+              --base main \
+              --head develop \
+              --assignee jskorlol \
+              --title "Merge develop into main" \
+              --body "" \
+              2>&1
+          )"; then
+            if printf '%s\n' "$create_output" | grep -Fq 'A pull request already exists'; then
+              echo "Skipped: PR already exists."
+              exit 0
+            fi
+
+            printf '%s\n' "$create_output" >&2
+            exit 1
+          fi
+
+          printf '%s\n' "$create_output"

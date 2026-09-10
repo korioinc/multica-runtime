@@ -4,10 +4,10 @@ set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 # shellcheck source=release-lib.sh
 source "$runtime_root/scripts/release-lib.sh"
-usage() { echo 'Usage: build-image.sh --image IMAGE [--version VERSION] [--base-image LOCAL_IMAGE] [--platform linux/amd64|linux/arm64] [--target installed|final] [--cache-from SPEC]... [--cache-to SPEC]...'; }
-image='' base='' platform='' target=final version=''
+usage() { echo 'Usage: build-image.sh --image IMAGE [--version VERSION] [--base-image LOCAL_IMAGE] [--platform linux/amd64|linux/arm64] [--target installed|final] [--docker-archive PATH] [--cache-from SPEC]... [--cache-to SPEC]...'; }
+image='' base='' platform='' target=final version='' docker_archive=''
 # External cache is opt-in; preserve each repeated cache specification as one argument.
-build_options=(--load)
+build_options=()
 while (($#)); do
   case "$1" in --help|-h) usage; exit 0 ;; esac
   (($# >= 2)) || { usage >&2; exit 2; }
@@ -17,6 +17,7 @@ while (($#)); do
     --platform) platform=$2 ;;
     --target) target=$2 ;;
     --version) version=$2 ;;
+    --docker-archive) docker_archive=$2 ;;
     --cache-from|--cache-to)
       [[ -n "$2" ]] || { usage >&2; exit 2; }
       build_options+=("$1" "$2") ;;
@@ -25,6 +26,11 @@ while (($#)); do
   shift 2
 done
 [[ -n "$image" && "$image" != -* && "$target" =~ ^(installed|final)$ ]] || { usage >&2; exit 2; }
+if [[ -n "$docker_archive" ]]; then
+  build_options+=(--output "type=docker,dest=$docker_archive,compression=gzip")
+else
+  build_options+=(--load)
+fi
 if [[ -z "$base" ]]; then
   runtime_check_inputs --production
   base=$(runtime_versions_json | jq -er .CONTROLLER_BASE_IMAGE_REF)
@@ -45,5 +51,9 @@ docker buildx build "${build_options[@]}" --platform "$platform" --target "$targ
   --build-arg "CONTROLLER_BASE_IMAGE_REF=$base" --build-arg "IMAGE_BUILD_ID=$build_id" \
   --build-arg "VERSION=$version" --build-arg "COMMIT=$revision" \
   --tag "$image" "$runtime_root"
-echo "Built $image ($platform, stage=$target, imageBuildID=$build_id)"
+if [[ -n "$docker_archive" ]]; then
+  echo "Exported $image to $docker_archive ($platform, stage=$target, imageBuildID=$build_id)"
+else
+  echo "Built $image ($platform, stage=$target, imageBuildID=$build_id)"
+fi
 [[ "$target" == final ]] || echo 'Intermediate stage is not a deployable runtime image'

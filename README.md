@@ -197,5 +197,9 @@ all transitive dependencies or guarantee byte-identical rebuilds.
 ## Releases
 
 Update [VERSION](VERSION) explicitly when preparing a release. The develop → main
-PR workflow maintains one promotion PR and runs the runtime's source and native
-image checks. It does not change VERSION or create release-preparation commits.
+PR workflow maintains one promotion PR. The separate Runtime PR CI workflow runs
+source and native image checks on pull requests targeting develop or main, keeping
+`verify` and `runtime-image` as the required checks. When GitHub Actions creates a
+new promotion PR, a maintainer must select **Approve workflows to run** on that PR
+to start its first CI run. Later developer pushes trigger CI through the PR event.
+The workflows do not change VERSION or create release-preparation commits.

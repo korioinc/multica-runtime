@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag
+        description: Existing release tag matching VERSION
         required: true
         type: string
       expected_revision:
@@ -54,7 +54,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
       - id: plan
-        name: Validate the release tag and pin its original source commit
+        name: Validate the release tag, VERSION and original main commit
         run: |
           revision=$(git rev-parse 'HEAD^{commit}')
           if [[ "$RELEASE_EVENT" == workflow_dispatch ]]; then
@@ -67,8 +67,27 @@ jobs:
           .github/scripts/release.sh --root "$GITHUB_WORKSPACE" \
           --image "$IMAGE" --revision "$revision" --version "$RELEASE_TAG" plan
 
-  native:
+  verify:
     needs: plan
+    if: needs.plan.outputs.published != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.revision }}
+          persist-credentials: false
+      - name: Validate runtime inputs and release automation
+        run: |
+          shellcheck scripts/*.sh .github/scripts/*.sh
+          scripts/inputs.sh check --production
+          scripts/verify-tag-version.sh
+          scripts/verify-release.sh
+
+  native:
+    needs: [plan, verify]
     if: needs.plan.outputs.published != 'true'
     env:
       RELEASE_REVISION: ${{ needs.plan.outputs.revision }}
@@ -99,11 +118,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - name: Validate shell scripts, version inputs and local release failure fixtures
-        run: |
-          shellcheck scripts/*.sh .github/scripts/*.sh
-          scripts/inputs.sh check --production
-          scripts/verify-release.sh
       - id: candidate
         name: Reuse verified candidate bytes on retry
         run: >-
@@ -135,11 +149,11 @@ jobs:
           retention-days: 1
 
   publish:
-    needs: [plan, native]
+    needs: [plan, verify, native]
     if: >-
       always() && needs.plan.result == 'success' &&
       ((needs.plan.outputs.published == 'true' && needs.native.result == 'skipped') ||
-       needs.native.result == 'success')
+       (needs.verify.result == 'success' && needs.native.result == 'success'))
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:

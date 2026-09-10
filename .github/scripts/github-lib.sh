@@ -59,3 +59,13 @@ github_tag_revision() {
     fail 'invalid release tag target'
   jq -r '.sha' <<<"$target"
 }
+
+github_require_main_revision() {
+  local revision=$1 main main_revision comparison
+  main=$(github git/ref/heads/main) || return 1
+  main_revision=$(jq -r '.object.sha // ""' <<<"$main") || fail 'invalid main revision'
+  [[ $main_revision =~ ^[0-9a-f]{40}$ ]] || fail 'main must identify a commit'
+  comparison=$(github "compare/$revision...$main_revision") || return 1
+  jq -e '.status == "ahead" or .status == "identical"' <<<"$comparison" >/dev/null ||
+    fail 'release revision is not in main history'
+}

@@ -109,11 +109,17 @@ Run `cua-driver doctor` from another shell in the same worker to check readiness
 The image installs the tools; the caller supplies its agent skills and MCP client
 registrations.
 
-The packaged Chrome launcher adds `--no-sandbox`. This disables Chrome's internal
-process sandbox, so browser sessions share the task user's access to files and
-credentials. Use `/usr/bin/google-chrome-stable` when choosing an executable
-explicitly, and allocate sufficient shared memory for browser workloads, such as
-Docker's `--shm-size=1g` or a memory-backed Kubernetes volume at `/dev/shm`.
+The packaged Chrome launcher adds `--no-sandbox` and `--disable-dev-shm-usage`.
+The former disables Chrome's internal process sandbox, so browser sessions share
+the task user's access to files and credentials. Use
+`/usr/bin/google-chrome-stable` when choosing an executable explicitly.
+
+Chrome stores its shared-memory files in writable `/tmp`. Keep this mount backed
+by disk, as in the controller's worker Pods, and account for its temporary storage,
+file cache, and I/O when sizing concurrent workers. Provide a separate
+memory-backed Kubernetes volume at `/dev/shm` capped at `256Mi` for other desktop
+tools (Docker: `--shm-size=256m`). This cap does not limit Chrome's total memory
+usage; Chrome uses `/tmp` from startup, rather than only after `/dev/shm` fills.
 
 ### Project dependencies
 
@@ -191,26 +197,9 @@ all transitive dependencies or guarantee byte-identical rebuilds.
 ## Releases
 
 Update [VERSION](VERSION) explicitly when preparing a release. The develop → main
-PR workflow maintains one promotion PR and runs the runtime's source and native
-image checks. It does not change VERSION or create release-preparation commits.
-
-When the change reaches `main`, the tagging workflow compares the committed
-VERSION before and after the push. An unchanged version does not release;
-an increased stable version creates an immutable `MAJOR.MINOR.PATCH` tag at the
-merged commit, without a prefix. A lower or invalid version fails tagging.
-
-The release workflow accepts tag pushes and manual retries on an existing tag.
-Because tags created with `GITHUB_TOKEN` do not trigger another push workflow,
-the tagging script explicitly dispatches the release on that tag with its exact
-commit SHA. Both paths require the tag to match committed VERSION and the source
-commit to belong to `main` history. Retries preserve the selected tag and commit
-even when `main` has advanced.
-
-The release workflow builds and verifies both architectures on native runners,
-publishes the multi-platform image to GHCR, and creates a GitHub Release. It
-publishes an immutable release tag and advances `latest` when the release is
-newer. Architecture-specific build caches are separate from release image tags.
-
-For the `1.0.1` release, publish controller base `1.0.1` before releasing this
-runtime. This base validates installed image files without requiring an adapter
-verification report.
+PR workflow maintains one promotion PR. The separate Runtime PR CI workflow runs
+source and native image checks on pull requests targeting develop or main, keeping
+`verify` and `runtime-image` as the required checks. When GitHub Actions creates a
+new promotion PR, a maintainer must select **Approve workflows to run** on that PR
+to start its first CI run. Later developer pushes trigger CI through the PR event.
+The workflows do not change VERSION or create release-preparation commits.

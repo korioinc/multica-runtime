@@ -193,24 +193,3 @@ all transitive dependencies or guarantee byte-identical rebuilds.
 Update [VERSION](VERSION) explicitly when preparing a release. The develop → main
 PR workflow maintains one promotion PR and runs the runtime's source and native
 image checks. It does not change VERSION or create release-preparation commits.
-
-When the change reaches `main`, the tagging workflow compares the committed
-VERSION before and after the push. An unchanged version does not release;
-an increased stable version creates an immutable `MAJOR.MINOR.PATCH` tag at the
-merged commit, without a prefix. A lower or invalid version fails tagging.
-
-The release workflow accepts tag pushes and manual retries on an existing tag.
-Because tags created with `GITHUB_TOKEN` do not trigger another push workflow,
-the tagging script explicitly dispatches the release on that tag with its exact
-commit SHA. Both paths require the tag to match committed VERSION and the source
-commit to belong to `main` history. Retries preserve the selected tag and commit
-even when `main` has advanced.
-
-The release workflow builds and verifies both architectures on native runners,
-publishes the multi-platform image to GHCR, and creates a GitHub Release. It
-publishes an immutable release tag and advances `latest` when the release is
-newer. Architecture-specific build caches are separate from release image tags.
-
-For the `1.0.1` release, publish controller base `1.0.1` before releasing this
-runtime. This base validates installed image files without requiring an adapter
-verification report.

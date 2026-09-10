@@ -46,9 +46,6 @@ FROM scratch AS runtime-config-input
 COPY build/layout.json build/desktop-supervisord.conf /build/
 COPY scripts/render-path-profile.sh scripts/runtime-entrypoint.sh scripts/configure-chrome.sh /scripts/
 
-FROM scratch AS verification-input
-COPY scripts/verify-source.sh scripts/verify-native.sh scripts/verify-adapter.sh scripts/verify-providers.sh /scripts/
-
 FROM ${CONTROLLER_BASE_IMAGE_REF} AS installed
 USER 0:0
 ARG TARGETARCH
@@ -111,7 +108,7 @@ ENV PATH="/opt/multica/tools/bin:/opt/multica/tools/node/bin:/opt/multica/tools/
     GDK_BACKEND=x11 \
     NO_AT_BRIDGE=0
 
-FROM installed AS prepared
+FROM installed AS final
 ARG CONTROLLER_BASE_IMAGE_REF
 ARG IMAGE_BUILD_ID
 ARG TARGETOS
@@ -131,16 +128,3 @@ LABEL org.opencontainers.image.title="Multica Runtime" \
 USER 65532:65532
 ENTRYPOINT ["/opt/multica/runtime/entrypoint"]
 CMD ["controller"]
-
-FROM prepared AS adapter-verify
-USER 0:0
-RUN --mount=type=tmpfs,target=/home/multica/agents \
-    mkdir -p /out /workspace && chown 65532:65532 /out /workspace /tmp && chmod 0700 /out /workspace /tmp
-USER 65532:65532
-RUN --mount=from=controller-source,source=src,target=/controller-source/src,readonly \
-    --mount=from=verification-input,target=/verify-input,readonly \
-    /bin/bash /verify-input/scripts/verify-native.sh && \
-    /bin/bash /verify-input/scripts/verify-adapter.sh /controller-source /out/verification.json
-
-FROM prepared AS final
-COPY --from=adapter-verify --chown=0:0 --chmod=0444 /out/verification.json /opt/multica/runtime/verification.json

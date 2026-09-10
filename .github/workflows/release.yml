@@ -104,16 +104,6 @@ jobs:
           shellcheck scripts/*.sh .github/scripts/*.sh
           scripts/inputs.sh check --production
           scripts/verify-release.sh
-      - id: base
-        name: Read controller revision from the pinned base
-        run: scripts/resolve-base.sh --platform '${{ matrix.platform }}'
-      - name: Check out the exact controller source for the adapter harness
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: korioinc/multica-runtime-controller
-          ref: ${{ steps.base.outputs.revision }}
-          path: .controller-source
-          persist-credentials: false
       - id: candidate
         name: Reuse verified candidate bytes on retry
         run: >-
@@ -121,13 +111,13 @@ jobs:
           --image "$IMAGE" --revision "$RELEASE_REVISION"
           --version "$RELEASE_VERSION"
           prepare-native --platform '${{ matrix.platform }}'
-      - name: Build a unique prepared image, verify it, and finalize once
+      - name: Build the native runtime image
         if: steps.candidate.outputs.reuse != 'true'
         # Separate native caches retain intermediate installation stages across runners.
         run: >-
           scripts/build-image.sh --image '${{ steps.candidate.outputs.image }}'
           --version "$RELEASE_VERSION"
-          --controller-source .controller-source --platform '${{ matrix.platform }}'
+          --platform '${{ matrix.platform }}'
           --cache-from "type=registry,ref=${IMAGE}:buildcache-${{ matrix.arch }}"
           --cache-to "type=registry,ref=${IMAGE}:buildcache-${{ matrix.arch }},mode=max"
       - name: Verify the final image natively before uploading candidate bytes
@@ -136,7 +126,6 @@ jobs:
           --image "$IMAGE" --revision "$RELEASE_REVISION"
           --version "$RELEASE_VERSION"
           record-native --platform '${{ matrix.platform }}'
-          --controller-source "$GITHUB_WORKSPACE/.controller-source"
           --records "$RUNNER_TEMP/native-results"
       - uses: actions/upload-artifact@v7.0.1
         with:

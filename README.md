@@ -23,9 +23,8 @@ flowchart TD
     base[Controller base] --> languages[OS packages and language runtimes]
     languages --> tools[Development, cloud, desktop, and database tools]
     tools --> agents[Multica CLI, coding agents, and MCP servers]
-    agents --> prepared[Runtime configuration, HOME seed, and descriptor]
-    prepared --> verification[Controller adapter verification]
-    verification --> final[Final image with verification report]
+    agents --> final[Runtime configuration, HOME seed, and descriptor]
+    final --> verification[Native image verification]
 ```
 
 The same image runs in two modes:
@@ -41,9 +40,9 @@ writable HOME from the public seed at `/opt/multica/runtime/home-seed`.
 paths, environment variables, and the HOME seed. Direct commands, login shells,
 and controller-managed commands share the same tool search paths.
 
-The final image includes its descriptor at `/opt/multica/runtime/image.json` and
-the controller adapter's verification report at
-`/opt/multica/runtime/verification.json`.
+The final image includes its descriptor at `/opt/multica/runtime/image.json`.
+The controller validates the descriptor against its base and installed binaries
+when admitting the image.
 
 ## Included Tools
 
@@ -135,28 +134,22 @@ installed with pipx or `uv tool install`.
 Requirements: Docker with Buildx, Bash, Git, jq, and `uuidgen`. Build and verify on
 a Docker host matching the target architecture.
 
-First, validate the public build inputs and resolve the source revision of the
-pinned controller base. Choose `linux/amd64` or `linux/arm64` for your host:
+Validate the public build inputs and choose `linux/amd64` or `linux/arm64` for
+your host:
 
 ```sh
 scripts/inputs.sh check --production
 runtime_platform=linux/amd64
-controller_revision=$(scripts/resolve-base.sh --platform "$runtime_platform")
-
-git clone --filter=blob:none --no-checkout \
-  https://github.com/korioinc/multica-runtime-controller.git .controller-source
-git -C .controller-source fetch origin "$controller_revision"
-git -C .controller-source checkout --detach "$controller_revision"
-
 scripts/build-image.sh \
   --image multica-runtime:latest \
-  --controller-source .controller-source \
   --platform "$runtime_platform"
 ```
 
-The controller source must match the base image because it supplies the adapter
-verification harness. The build script produces the final image by default;
-`installed` and `prepared` targets are intermediate build stages.
+The build consumes the controller base image selected in `versions.env`. For a
+locally built controller base, pass `--base-image LOCAL_IMAGE`. The build script
+produces the final image by default; `--target installed` stops before creating
+the runtime descriptor. Run the image verification below before using a local
+build.
 
 [versions.env](versions.env) owns pinned tool inputs, and [VERSION](VERSION) owns
 the release identifier. Each installation group receives only its own inputs:
@@ -179,17 +172,16 @@ scripts/verify-tag-version.sh
 scripts/verify-release.sh
 ```
 
-Verify the locally built image with the matching controller checkout:
+Verify the locally built image:
 
 ```sh
-scripts/verify-image.sh \
-  --image multica-runtime:latest \
-  --controller-source .controller-source
+scripts/verify-image.sh --image multica-runtime:latest
 ```
 
-Verification exercises installed tools, provider integration, HOME initialization,
-the controller adapter, and rejection of altered image metadata or executables.
-It uses disposable containers and requires native execution by default.
+Verification exercises installed tools, provider integration, controller-managed
+HOME initialization, and rejection of image metadata that differs from installed
+executables. It uses disposable containers and requires native execution by
+default. Controller adapter integration tests remain in the controller repository.
 
 Resolved dependency inventories are stored at `/opt/multica/runtime/inventory`,
 alongside a copy of the original build inputs. They record installed Debian, npm,
@@ -207,3 +199,7 @@ The release workflow builds and verifies both architectures on native runners,
 publishes the multi-platform image to GHCR, and creates a GitHub Release. It
 publishes an immutable release tag and advances `latest` when the release is
 newer. Architecture-specific build caches are separate from release image tags.
+
+For the `1.0.1` release, publish controller base `1.0.1` before releasing this
+runtime. This base validates installed image files without requiring an adapter
+verification report.

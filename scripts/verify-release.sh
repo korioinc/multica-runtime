@@ -13,8 +13,14 @@ export PATH="$scratch/bin:$PATH"
 cat > "$scratch/bin/git" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ $1 == -C && $3 == rev-parse && $4 == HEAD ]]
-printf '%s\n' "$RELEASE_FIXTURE_CHECKOUT_REVISION"
+[[ $1 == -C ]]
+case "$3:$4" in
+  rev-parse:HEAD) printf '%s\n' "$RELEASE_FIXTURE_CHECKOUT_REVISION" ;;
+  show:*:VERSION)
+    revision=${4%:VERSION}
+    cat "$RELEASE_FIXTURE_ROOT/versions/$revision" ;;
+  *) exit 2 ;;
+esac
 STUB
 cat > "$scratch/checkout/scripts/verify-image.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -40,6 +46,13 @@ if [[ $(basename "$0") == gh ]]; then
     fi
     case "$endpoint" in
       git/ref/heads/main) body=$(jq -n --arg revision "$(cat "$state/main")" '{object:{type:"commit",sha:$revision}}') ;;
+      compare/*)
+        revisions=${endpoint#compare/}
+        base=${revisions%%...*} head=${revisions#*...}
+        if [[ -f "$state/not-in-main" ]]; then comparison=diverged
+        elif [[ $base == "$head" ]]; then comparison=identical
+        else comparison=ahead; fi
+        body=$(jq -n --arg status "$comparison" '{status:$status}') ;;
       git/ref/tags/*) path="$state/tags/${endpoint##*/}.json"; [[ -f $path ]] && body=$(cat "$path") || body=null ;;
       git/tags/*) path="$state/tag-objects/${endpoint##*/}.json"; [[ -f $path ]] && body=$(cat "$path") || body=null ;;
       releases/tags/*) path="$state/releases/${endpoint##*/}.json"; [[ -f $path ]] && body=$(cat "$path") || body=null ;;
@@ -162,10 +175,11 @@ ln -s service "$scratch/bin/gh"
 key() { printf '%s' "$1" | shasum -a 256 | cut -d ' ' -f 1; }
 initialize() {
   rm -rf -- "$RELEASE_FIXTURE_ROOT"
-  mkdir -p "$RELEASE_FIXTURE_ROOT/refs" "$RELEASE_FIXTURE_ROOT/images" "$RELEASE_FIXTURE_ROOT/records" "$RELEASE_FIXTURE_ROOT/tags" "$RELEASE_FIXTURE_ROOT/tag-objects" "$RELEASE_FIXTURE_ROOT/releases"
+  mkdir -p "$RELEASE_FIXTURE_ROOT/refs" "$RELEASE_FIXTURE_ROOT/images" "$RELEASE_FIXTURE_ROOT/records" "$RELEASE_FIXTURE_ROOT/tags" "$RELEASE_FIXTURE_ROOT/tag-objects" "$RELEASE_FIXTURE_ROOT/releases" "$RELEASE_FIXTURE_ROOT/versions"
   export RELEASE_FIXTURE_REVISION=1111111111111111111111111111111111111111
   export RELEASE_FIXTURE_CHECKOUT_REVISION=$RELEASE_FIXTURE_REVISION
   export RELEASE_FIXTURE_VERSION=0.1.0
+  printf '%s\n' "$RELEASE_FIXTURE_VERSION" > "$RELEASE_FIXTURE_ROOT/versions/$RELEASE_FIXTURE_REVISION"
   printf '%s\n' "$RELEASE_FIXTURE_REVISION" > "$RELEASE_FIXTURE_ROOT/main"
   create_tag
   native_images 0
@@ -174,6 +188,12 @@ create_tag() {
   jq -n --arg revision "$RELEASE_FIXTURE_REVISION" '{object:{type:"commit",sha:$revision}}' > "$RELEASE_FIXTURE_ROOT/tags/$RELEASE_FIXTURE_VERSION.json"
 }
 checkout_release() {
+  local committed="$RELEASE_FIXTURE_ROOT/versions/$2"
+  if [[ -f $committed ]]; then
+    [[ $(cat "$committed") == "$1" ]] || { echo 'Fixture commit cannot change VERSION' >&2; exit 1; }
+  else
+    printf '%s\n' "$1" > "$committed"
+  fi
   export RELEASE_FIXTURE_VERSION=$1
   export RELEASE_FIXTURE_REVISION=$2
   export RELEASE_FIXTURE_CHECKOUT_REVISION=$RELEASE_FIXTURE_REVISION
@@ -243,6 +263,17 @@ select_planned_version() {
   cmp "$scratch/before-plan" "$scratch/after-plan"
   RELEASE_FIXTURE_VERSION=$(jq -er .version "$scratch/result")
 }
+
+initialize
+RELEASE_FIXTURE_VERSION=0.1.1
+create_tag
+expect_blocked_without_writes release plan
+expect_blocked_without_writes publish
+
+initialize
+touch "$RELEASE_FIXTURE_ROOT/not-in-main"
+expect_blocked_without_writes release plan
+expect_blocked_without_writes publish
 
 initialize
 record amd64
@@ -510,7 +541,7 @@ expect_blocked_without_writes release plan
 cp "$scratch/ownership-release" "$release_file"
 cp "$scratch/ownership-tag" "$tag_file"
 # Requesting a higher version cannot hide disagreement between GitHub and registry owners.
-checkout_release 9.0.0 "$RELEASE_FIXTURE_REVISION"
+checkout_release 9.0.0 3333333333333333333333333333333333333333
 jq '.object.sha="3333333333333333333333333333333333333333"' "$scratch/ownership-tag" > "$tag_file"
 jq '.target_commitish="3333333333333333333333333333333333333333"' "$scratch/ownership-release" > "$release_file"
 expect_blocked_without_writes release plan
@@ -534,7 +565,7 @@ require_success publish
 remember_immutable_bytes "$scratch/newer-publication"
 latest_before=$(artifact_digest fixture/runtime:latest)
 cp "$RELEASE_FIXTURE_ROOT/latest-release" "$scratch/newer-latest-release"
-checkout_release 0.1.1 1111111111111111111111111111111111111111
+checkout_release 0.1.1 3333333333333333333333333333333333333333
 native_images 200
 select_planned_version
 record amd64
@@ -567,7 +598,7 @@ expect_blocked publish
 cp "$RELEASE_FIXTURE_ROOT/latest-release" "$scratch/partial-latest-release"
 remember_immutable_bytes "$scratch/partial-promotion"
 rm "$RELEASE_FIXTURE_ROOT/fail-registry-latest"
-checkout_release 0.1.1 1111111111111111111111111111111111111111
+checkout_release 0.1.1 3333333333333333333333333333333333333333
 native_images 200
 record amd64
 record arm64

@@ -50,6 +50,7 @@ if [[ -n $previous ]]; then
   [[ $(version_compare "$version" "$previous") == 1 ]] || fail 'VERSION must increase for an automatic release'
 fi
 
+github_require_main_revision "$revision"
 owner=$(github_tag_revision "$version")
 if [[ -z $owner ]]; then
   jq -n --arg ref "refs/tags/$version" --arg sha "$revision" '{ref:$ref,sha:$sha}' > "$scratch/tag.json"

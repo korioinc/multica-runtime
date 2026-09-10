@@ -9,7 +9,7 @@ source "$repository/scripts/release-lib.sh"
 usage() {
   cat <<'USAGE'
 Usage: release.sh --root ABSOLUTE_CHECKOUT --image REPOSITORY --revision FULL_COMMIT --version TAG COMMAND
-  plan (validate the pushed stable semantic version tag and its checked-out commit)
+  plan (validate the release tag, committed VERSION and main source history)
   prepare-native --platform linux/amd64|linux/arm64
   record-native --platform linux/amd64|linux/arm64 --records DIRECTORY
   publish --records DIRECTORY
@@ -57,6 +57,8 @@ version_stable "$version"
 [[ $(git -C "$root" rev-parse HEAD) == "$revision" ]] || fail 'revision differs from checked-out source'
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/runtime-release.XXXXXX")
 trap 'rm -rf -- "$scratch"' EXIT
+git -C "$root" show "$revision:VERSION" > "$scratch/version" || fail 'release source must contain VERSION'
+[[ $(version_read "$scratch/version") == "$version" ]] || fail 'release tag differs from committed VERSION'
 revision_label=org.opencontainers.image.revision
 version_label=org.opencontainers.image.version
 
@@ -139,6 +141,7 @@ github_version_revision() {
 
 guard() {
   local owner
+  github_require_main_revision "$revision" || return 1
   owner=$(github_version_revision "$version" true) || return 1
   [[ $owner == "$revision" ]] || fail 'release tag does not identify the checked-out revision'
 }

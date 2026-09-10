@@ -39,6 +39,18 @@ respond() {
 }
 if [[ $method == GET ]]; then
   case "$endpoint" in
+    git/ref/heads/main)
+      respond '200 OK' "$(jq -n --arg revision "$(cat "$state/main")" '{object:{type:"commit",sha:$revision}}')"
+      exit ;;
+    compare/*)
+      revisions=${endpoint#compare/}
+      base=${revisions%%...*} head=${revisions#*...}
+      if [[ $base == "$head" ]]; then comparison=identical
+      elif git -C "$TAG_FIXTURE_CHECKOUT" merge-base --is-ancestor "$base" "$head"; then comparison=ahead
+      elif git -C "$TAG_FIXTURE_CHECKOUT" merge-base --is-ancestor "$head" "$base"; then comparison=behind
+      else comparison=diverged; fi
+      respond '200 OK' "$(jq -n --arg status "$comparison" '{status:$status}')"
+      exit ;;
     git/ref/tags/*) path="$state/tags/${endpoint##*/}.json" ;;
     git/tags/*) path="$state/tag-objects/${endpoint##*/}.json" ;;
     *) exit 2 ;;
@@ -97,6 +109,7 @@ zero=0000000000000000000000000000000000000000
 initialize() {
   rm -rf -- "$TAG_FIXTURE_STATE"
   mkdir -p "$TAG_FIXTURE_STATE/tags" "$TAG_FIXTURE_STATE/tag-objects" "$TAG_FIXTURE_STATE/accepted"
+  printf '%s\n' "$1" > "$TAG_FIXTURE_STATE/main"
   git -C "$checkout" reset --hard -q
   git -C "$checkout" checkout -q --detach "$1"
 }
@@ -135,6 +148,16 @@ require_accepted_release() {
 # Only committed VERSION determines the release, and its exact commit is queued.
 initialize "$upgrade"
 printf '9.9.9\n' > "$checkout/VERSION"
+require_success tag_version "$normalized" "$upgrade"
+require_tag_owner 0.2.0 "$upgrade"
+require_accepted_release 0.2.0 "$upgrade"
+
+# An unmerged commit cannot create a release; queued main commits remain valid.
+initialize "$upgrade"
+printf '%s\n' "$initial" > "$TAG_FIXTURE_STATE/main"
+expect_blocked_without_writes tag_version "$normalized" "$upgrade"
+initialize "$upgrade"
+printf '%s\n' "$missing" > "$TAG_FIXTURE_STATE/main"
 require_success tag_version "$normalized" "$upgrade"
 require_tag_owner 0.2.0 "$upgrade"
 require_accepted_release 0.2.0 "$upgrade"

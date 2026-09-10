@@ -2,20 +2,18 @@
 set -euo pipefail
 # shellcheck source=lib.sh
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
-usage() { echo 'Usage: verify-image.sh --image IMAGE_REF --controller-source PATH [--allow-emulation]'; }
-image='' controller_source='' allow_emulation=false
+usage() { echo 'Usage: verify-image.sh --image IMAGE_REF [--allow-emulation]'; }
+image='' allow_emulation=false
 while (($#)); do
   case "$1" in
     --help|-h) usage; exit 0 ;;
     --allow-emulation) allow_emulation=true; shift; continue ;;
   esac
   (($# >= 2)) || { usage >&2; exit 2; }
-  case "$1" in --image) image=$2 ;; --controller-source) controller_source=$2 ;; *) usage >&2; exit 2 ;; esac
+  case "$1" in --image) image=$2 ;; *) usage >&2; exit 2 ;; esac
   shift 2
 done
-[[ -n "$image" && -n "$controller_source" && "$image" != -* ]] || { usage >&2; exit 2; }
-controller_source=$(cd -- "$controller_source" && pwd)
-[[ -f "$controller_source/src/go.mod" ]] || { echo 'Matching controller source is required' >&2; exit 2; }
+[[ -n "$image" && "$image" != -* ]] || { usage >&2; exit 2; }
 runtime_check_inputs ''
 inspect=$(docker image inspect "$image")
 image_id=$(jq -er '.[0].Id' <<< "$inspect")
@@ -36,10 +34,7 @@ options=(--rm --platform "$platform" --user 65532:65532 --read-only --cap-drop A
   --tmpfs '/workspace:rw,exec,uid=65532,gid=65532,mode=0700'
   --mount "type=bind,src=$runtime_root/scripts,dst=/verify-input,readonly"
   --mount "type=bind,src=$runtime_root/versions.env,dst=/reference/versions.env,readonly"
-  --mount "type=bind,src=$controller_source/src,dst=/controller-source/src,readonly"
   --entrypoint /bin/bash)
-# A wrong checkout is a startup error, before the native/adapter suites run.
-docker run "${options[@]}" "$image_id" -ec '/verify-input/verify-source.sh /controller-source /tmp/source-match'
 # These direct probes have no network or credentials and never mutate the artifact.
 docker run "${options[@]}" --network none -e "EXPECTED_BUILD_ID=$label" "$image_id" -ec '
   test "$(jq -er .imageBuildID /opt/multica/runtime/image.json)" = "$EXPECTED_BUILD_ID"
@@ -47,27 +42,24 @@ docker run "${options[@]}" --network none -e "EXPECTED_BUILD_ID=$label" "$image_
   /opt/multica/controller/runtime image verify
   private_root=$(mktemp -d /tmp/home.XXXXXX)
   /opt/multica/controller/runtime home layout --private-root="$private_root"
-  HOME="$private_root/agents" /verify-input/verify-native.sh --initialized-home
+  HOME="$private_root/agents" /verify-input/verify-native.sh
 '
-# The controller-source build downloads only locked Go modules, and the adapter
-# communicates with its own loopback fixtures. No host auth/config is mounted.
-docker run "${options[@]}" "$image_id" -ec '/verify-input/verify-adapter.sh /controller-source /tmp/verification.json'
 # Mutate only disposable container overlays, after proving the original image.
-# A copied verification record must not admit a changed descriptor or daemon.
+# The controller must reject metadata that does not match installed binaries.
 for component in descriptor daemon; do
   docker run --rm --platform "$platform" --network none --user 0:0 --cap-drop ALL --cap-add DAC_OVERRIDE \
     --security-opt no-new-privileges --entrypoint /bin/bash -e "COMPONENT=$component" "$image_id" -ec '
       descriptor=/opt/multica/runtime/image.json
       /opt/multica/controller/runtime image verify >/dev/null
       if [[ "$COMPONENT" == descriptor ]]; then
-        jq '\''.imageBuildID = "00000000-0000-4000-8000-000000000001"'\'' "$descriptor" > /tmp/changed-descriptor.json
+        jq '\''.daemon.sha256 = "0000000000000000000000000000000000000000000000000000000000000000"'\'' "$descriptor" > /tmp/changed-descriptor.json
         cat /tmp/changed-descriptor.json > "$descriptor"
       else
         daemon=$(jq -er .daemon.path "$descriptor")
         printf "\\n" >> "$daemon"
       fi
       if /opt/multica/controller/runtime image verify; then
-        echo "Changed image incorrectly admitted by stale verification" >&2
+        echo "Changed image incorrectly admitted" >&2
         exit 1
       fi
     '

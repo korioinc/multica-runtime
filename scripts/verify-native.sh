@@ -1,11 +1,7 @@
 #!/bin/bash
-# Runs inside the image with fresh private writable HOME/tmp/run mounts.
+# Runs inside the image with a controller-initialized HOME and private tmp/run mounts.
 set -euo pipefail
-initialized_home=false
-if (($#)); then
-  [[ $# == 1 && $1 == --initialized-home ]] || { echo 'Usage: verify-native.sh [--initialized-home]' >&2; exit 2; }
-  initialized_home=true
-fi
+[[ $# == 0 ]] || { echo 'Usage: verify-native.sh' >&2; exit 2; }
 umask 077
 [[ $(id -u) == 65532 && $(id -g) == 65532 ]] || { echo 'Verification requires UID/GID 65532' >&2; exit 1; }
 descriptor=/opt/multica/runtime/image.json
@@ -22,8 +18,7 @@ for parent in / /home /home/multica /run; do
 done
 scratch=$(mktemp -d /tmp/runtime-native.XXXXXX)
 trap 'rm -rf -- "$scratch"' EXIT
-# Prepare the direct tool probes. This fixture interpolation does not validate
-# the controller's Vars implementation; the controller-owned adapter suite does.
+# Prepare environment variables for direct tool probes.
 while IFS= read -r -d '' key && IFS= read -r -d '' value; do export "$key=$value"; done < <(
   jq -j --arg home "$HOME" --arg temporary /tmp --arg workspace /workspace '
     .env | to_entries[] | .key, "\u0000", (.value | split("${HOME}") | join($home) |
@@ -34,15 +29,6 @@ while IFS= read -r -d '' key && IFS= read -r -d '' value; do export "$key=$value
 export TMPDIR=/tmp
 tool_path=$(jq -r '.binDirs[]' "$descriptor" | while IFS= read -r directory; do readlink -f "$directory"; done | paste -sd: -)
 export PATH="$tool_path"
-if [[ "$initialized_home" == false ]]; then
-  # Prepared images have no admission verification report yet, so home-layout
-  # cannot run here. Seed only this disposable probe HOME, retaining owner execute.
-  # Final-image verification must instead exercise controller home layout and
-  # pass --initialized-home; it must not use this admission bootstrap shortcut.
-  cp -Rn /opt/multica/runtime/home-seed/. "$HOME/"
-  find "$HOME" -type d -exec chmod 0700 {} +
-  find "$HOME" -type f -exec chmod u+rw,go-rwx {} +
-fi
 pin() { sed -n "s/^$1=//p" "$inventory/versions.env"; }
 probe() {
   local name=$1 expected=$2

@@ -77,7 +77,7 @@ git lfs install --system
 ln -sf /usr/bin/python3 "$tools/bin/python"
 
 # --- Installation records ---
-# Record resolved dependencies; the prepared stage records full public inputs.
+# Record resolved dependencies; the final stage records full public inputs.
 inventory=/opt/multica/runtime/inventory
 mkdir -p "$inventory"
 "$tools/oci/bin/pip" list --format=json > "$inventory/python-oci.json"

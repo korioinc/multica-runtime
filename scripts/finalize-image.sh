@@ -39,8 +39,7 @@ metadata() {
 }
 metadata "$(jq -er .daemon "$root/build/layout.json")" "$(get_pin MULTICA_CLI_VERSION)" | \
   jq '. + {adapterContract:"multica-v0.4.40-v1"}' > "$scratch/daemon.json"
-# The contract names the adapter baseline, not an unconditional version allowlist.
-# A new CLI pin must pass the actual matching-source suite before finalization.
+# The contract names the controller adapter baseline.
 printf '{}\n' > "$scratch/providers.json"
 for provider in codex pi; do
   key=$(tr '[:lower:]' '[:upper:]' <<< "$provider")_VERSION

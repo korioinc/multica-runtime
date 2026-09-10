@@ -199,7 +199,7 @@ release() {
   local -a options=(--root "$scratch/checkout" --image fixture/runtime --revision "$RELEASE_FIXTURE_REVISION" --version "$RELEASE_FIXTURE_VERSION")
   "$root/.github/scripts/release.sh" "${options[@]}" "$@" > "$scratch/result" 2> "$scratch/error"
 }
-record() { release record-native --platform "linux/$1" --controller-source "$scratch/checkout" --records "$RELEASE_FIXTURE_ROOT/records"; }
+record() { release record-native --platform "linux/$1" --records "$RELEASE_FIXTURE_ROOT/records"; }
 publish() { release publish --records "$RELEASE_FIXTURE_ROOT/records"; }
 require_success() { if ! "$@"; then cat "$scratch/error" >&2; echo "Release fixture operation failed: $*" >&2; exit 1; fi; }
 expect_blocked() { if "$@"; then echo "Release fixture unexpectedly allowed an unsafe transition at line ${BASH_LINENO[0]}: $*" >&2; exit 1; fi; }

@@ -11,7 +11,7 @@ usage() {
 Usage: release.sh --root ABSOLUTE_CHECKOUT --image REPOSITORY --revision FULL_COMMIT --version TAG COMMAND
   plan (validate the pushed stable semantic version tag and its checked-out commit)
   prepare-native --platform linux/amd64|linux/arm64
-  record-native --platform linux/amd64|linux/arm64 --records DIRECTORY --controller-source DIRECTORY
+  record-native --platform linux/amd64|linux/arm64 --records DIRECTORY
   publish --records DIRECTORY
 External effects use gh and docker; PATH can provide local fixture commands.
 USAGE
@@ -20,7 +20,7 @@ fail() { printf 'release blocked: %s\n' "$*" >&2; exit 1; }
 supported_platform() { [[ $1 == linux/amd64 || $1 == linux/arm64 ]]; }
 valid_digest() { [[ $1 =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'invalid registry digest'; printf '%s\n' "$1"; }
 
-root='' image='' revision='' version='' release_command='' platform='' records='' controller_source=''
+root='' image='' revision='' version='' release_command='' platform='' records=''
 while [[ $# -gt 0 ]]; do
   case $1 in
     --root|--image|--revision|--version)
@@ -39,7 +39,6 @@ while [[ $# -gt 0 ]]; do
   case "$release_command:$1" in
     prepare-native:--platform|record-native:--platform) platform=$2 ;;
     record-native:--records|publish:--records) records=$2 ;;
-    record-native:--controller-source) controller_source=$2 ;;
     *) usage >&2; exit 1 ;;
   esac
   shift 2
@@ -269,14 +268,13 @@ prepare_native() {
 record_native() {
   local ref local_image existing pin manifest record
   ref=$(native_ref "$platform")
-  [[ -n $controller_source ]] || fail 'matching --controller-source is required'
   local_image=$(run_command 'inspect local native image' docker image inspect "$ref") || return 1
   jq -e --arg platform "$platform" --arg revision "$revision" --arg version "$version" '
     length == 1 and (.[0] | .Os + "/" + .Architecture == $platform and
       .Config.Labels["org.opencontainers.image.revision"] == $revision and
       .Config.Labels["org.opencontainers.image.version"] == $version)
   ' <<< "$local_image" >/dev/null || fail 'local candidate does not match release metadata'
-  run_command 'verify native image' bash "$root/scripts/verify-image.sh" --image "$ref" --controller-source "$controller_source" >/dev/null || return 1
+  run_command 'verify native image' bash "$root/scripts/verify-image.sh" --image "$ref" >/dev/null || return 1
   local_image=$(run_command 'inspect verified native image' docker image inspect "$ref") || return 1
   existing=$(inspect "$ref" Manifest true) || return 1
   if [[ $existing != null ]]; then

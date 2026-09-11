@@ -1,95 +1,139 @@
-name: Create develop into main PR
+name: Create develop to main PR
 
 on:
+  pull_request:
+    branches: [develop, main]
   push:
-    branches:
-      - develop
+    branches: [develop]
+  repository_dispatch:
+    types: [create-develop-to-main-pr]
+  workflow_dispatch:
 
-permissions:
-  contents: read
-  pull-requests: write
+permissions: {}
 
 concurrency:
-  group: create-develop-to-main-pr
-  cancel-in-progress: false
+  group: develop-to-main-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  create-pr:
+  context:
+    name: check-context
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      should_run: ${{ steps.resolve.outputs.should_run }}
+      head_sha: ${{ steps.resolve.outputs.head_sha }}
     env:
+      GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
+      - name: Resolve the exact PR head
+        id: resolve
+        env:
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          EVENT_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          head_sha=$EVENT_HEAD
+          number=$EVENT_NUMBER
+          [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo 'Invalid head SHA.' >&2; exit 1;
+          }
+          [[ "$number" =~ ^[1-9][0-9]*$ ]] || {
+            echo 'Invalid PR number.' >&2; exit 1;
+          }
+          pr=$(gh api "repos/$GH_REPO/pulls/$number")
+          jq -e --argjson number "$number" \
+            '.number == $number and
+             (.state == "open" or .state == "closed") and
+             (.head.sha | type == "string" and test("^[0-9a-f]{40}$")) and
+             (.base.ref | type == "string" and length > 0)' \
+            <<<"$pr" >/dev/null || {
+              echo 'Invalid PR response from GitHub.' >&2; exit 1;
+            }
+          reason=$(jq -r --arg head_sha "$head_sha" '
+            if .state == "closed" then "PR is already closed or merged."
+            elif .head.sha != $head_sha then "PR head changed since this run was queued."
+            elif .base.ref != "develop" and .base.ref != "main" then "PR no longer targets develop or main."
+            else "" end' <<<"$pr")
+          if [[ -n "$reason" ]]; then
+            printf 'Skipping PR #%s: %s\n' "$number" "$reason" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo 'should_run=false' >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          {
+            echo 'should_run=true'
+            echo "head_sha=$head_sha"
+          } >>"$GITHUB_OUTPUT"
+
+  verify:
+    name: verify
+    needs: context
+    if: needs.context.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the exact PR head
+        uses: actions/checkout@v7.0.1
         with:
+          ref: ${{ needs.context.outputs.head_sha }}
           fetch-depth: 0
-
-      - name: Check whether develop is ahead of main
-        id: branch-state
-        shell: bash
+          persist-credentials: false
+      - name: Validate runtime inputs and release automation
         run: |
+          shellcheck scripts/*.sh .github/scripts/*.sh
+          scripts/inputs.sh check --production
+          scripts/verify-tag-version.sh
+          scripts/verify-release.sh
+
+  promote:
+    name: create-develop-to-main-pr
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'repository_dispatch' &&
+       github.event.action == 'create-develop-to-main-pr') ||
+      github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Maintain one develop to main PR
+        run: |
+          # shellcheck disable=SC2016
           set -euo pipefail
-
-          git fetch origin main develop
-
-          read -r main_only_commit_count develop_only_commit_count < <(
-            git rev-list --left-right --count origin/main...origin/develop
-          )
-
-          echo "main_only_commit_count=${main_only_commit_count}" >> "$GITHUB_OUTPUT"
-          echo "develop_only_commit_count=${develop_only_commit_count}" >> "$GITHUB_OUTPUT"
-
-          if [ "$develop_only_commit_count" -eq 0 ]; then
-            echo "should_create=false" >> "$GITHUB_OUTPUT"
+          main_sha=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)
+          develop_sha=$(gh api "repos/$GH_REPO/git/ref/heads/develop" --jq .object.sha)
+          compare=$(gh api "repos/$GH_REPO/compare/$main_sha...$develop_sha")
+          if [ "$(jq -r .ahead_by <<<"$compare")" -eq 0 ]; then
+            echo 'develop has no commits to promote to main.' >>"$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-
-          echo "should_create=true" >> "$GITHUB_OUTPUT"
-
-      - name: Check for an existing PR
-        id: existing-pr
-        if: steps.branch-state.outputs.should_create == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          pr_count="$(gh pr list \
-            --base main \
-            --head develop \
-            --state open \
-            --json number \
-            --jq 'length')"
-
-          if [ "$pr_count" -gt 0 ]; then
-            echo "should_create=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "should_create=true" >> "$GITHUB_OUTPUT"
-
-      - name: Create pull request
-        if: steps.branch-state.outputs.should_create == 'true' && steps.existing-pr.outputs.should_create == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if ! create_output="$(
-            gh pr create \
-              --base main \
-              --head develop \
+          prs=$(gh pr list --state open --base main --head develop \
+            --json number --limit 2)
+          count=$(jq 'length' <<<"$prs")
+          [ "$count" -le 1 ]
+          if [ "$count" -eq 0 ]; then
+            url=$(gh pr create --base main --head develop \
               --assignee jskorlol \
-              --title "Merge develop into main" \
-              --body "" \
-              2>&1
-          )"; then
-            if printf '%s\n' "$create_output" | grep -Fq 'A pull request already exists'; then
-              echo "Skipped: PR already exists."
-              exit 0
-            fi
-
-            printf '%s\n' "$create_output" >&2
-            exit 1
+              --title 'release: merge develop into main' \
+              --body 'Merges the verified develop branch. When VERSION increases, main creates the matching tag and publishes its image and GitHub Release. VERSION is never bumped automatically.')
+            number=${url##*/}
+          else
+            number=$(jq -r '.[0].number' <<<"$prs")
           fi
-
-          printf '%s\n' "$create_output"
+          pr=$(gh api "repos/$GH_REPO/pulls/$number")
+          head_sha=$(jq -r .head.sha <<<"$pr")
+          [ "$head_sha" = "$develop_sha" ]
+          printf "Promotion PR #%s targets develop '%s'.\n" \
+            "$number" "$head_sha" >>"$GITHUB_STEP_SUMMARY"

@@ -75,12 +75,16 @@ elif [[ $method == POST && $endpoint == git/refs ]]; then
   respond '201 Created' "$created"
 elif [[ $method == POST && $endpoint == actions/workflows/release.yml/dispatches ]]; then
   [[ -n $input ]]
-  tag=$(jq -er .ref "$input")
-  [[ -f "$state/tags/$tag.json" ]]
+  ref=$(jq -er .ref "$input")
+  if [[ $ref == main ]]; then
+    [[ -f "$state/main" ]]
+  else
+    [[ -f "$state/tags/$ref.json" ]]
+  fi
   if [[ -f "$state/fail-dispatch" ]]; then respond '503 Service Unavailable' '{}'; exit; fi
-  # Persist the accepted workflow identity without inventing server-side checks
-  # for tag/expected_revision inputs: GitHub accepts those workflow inputs as given.
-  cp "$input" "$state/accepted/$tag.json"
+  # Preserve accepted requests as remote effects without interpreting inputs;
+  # GitHub accepts the tag and expected_revision workflow inputs as given.
+  cp "$input" "$state/accepted/request.json"
   respond '204 No Content' '{}'
 else
   exit 2
@@ -139,18 +143,12 @@ expect_blocked_without_writes() {
 require_tag_owner() {
   jq -e --arg revision "$2" '.object.sha == $revision' "$TAG_FIXTURE_STATE/tags/$1.json" >/dev/null
 }
-require_accepted_release() {
-  jq -e --arg version "$1" --arg revision "$2" \
-    '.ref == $version and .inputs.tag == $version and .inputs.expected_revision == $revision' \
-    "$TAG_FIXTURE_STATE/accepted/$1.json" >/dev/null
-}
 
-# Only committed VERSION determines the release, and its exact commit is queued.
+# Only committed VERSION determines the release tag and its immutable owner.
 initialize "$upgrade"
 printf '9.9.9\n' > "$checkout/VERSION"
 require_success tag_version "$normalized" "$upgrade"
 require_tag_owner 0.2.0 "$upgrade"
-require_accepted_release 0.2.0 "$upgrade"
 
 # An unmerged commit cannot create a release; queued main commits remain valid.
 initialize "$upgrade"
@@ -160,7 +158,6 @@ initialize "$upgrade"
 printf '%s\n' "$missing" > "$TAG_FIXTURE_STATE/main"
 require_success tag_version "$normalized" "$upgrade"
 require_tag_owner 0.2.0 "$upgrade"
-require_accepted_release 0.2.0 "$upgrade"
 
 # A normalized value that did not change cannot publish or schedule a release.
 initialize "$normalized"
@@ -173,7 +170,6 @@ cmp "$scratch/unchanged-before" "$scratch/unchanged-after"
 initialize "$initial"
 require_success tag_version "$zero" "$initial"
 require_tag_owner 0.1.0 "$initial"
-require_accepted_release 0.1.0 "$initial"
 
 # Checkout provenance and valid increasing committed versions authorize writes.
 initialize "$initial"
@@ -200,26 +196,23 @@ rm "$TAG_FIXTURE_STATE/fail-create"
 touch "$TAG_FIXTURE_STATE/fail-create-response"
 tag_version "$normalized" "$upgrade" || true
 require_tag_owner 0.2.0 "$upgrade"
-if [[ -f "$TAG_FIXTURE_STATE/accepted/0.2.0.json" ]]; then require_accepted_release 0.2.0 "$upgrade"; fi
 cp "$TAG_FIXTURE_STATE/tags/0.2.0.json" "$scratch/created-tag"
 rm "$TAG_FIXTURE_STATE/fail-create-response"
 require_success tag_version "$normalized" "$upgrade"
 cmp "$scratch/created-tag" "$TAG_FIXTURE_STATE/tags/0.2.0.json"
-require_accepted_release 0.2.0 "$upgrade"
 
-# Dispatch failure preserves the immutable tag and a retry completes scheduling.
+# Dispatch failure preserves the immutable tag across retry.
 initialize "$upgrade"
 touch "$TAG_FIXTURE_STATE/fail-dispatch"
 expect_blocked tag_version "$normalized" "$upgrade"
 require_tag_owner 0.2.0 "$upgrade"
-[[ ! -f "$TAG_FIXTURE_STATE/accepted/0.2.0.json" ]]
+[[ ! -f "$TAG_FIXTURE_STATE/accepted/request.json" ]]
 cp "$TAG_FIXTURE_STATE/tags/0.2.0.json" "$scratch/dispatch-tag"
 rm "$TAG_FIXTURE_STATE/fail-dispatch"
 require_success tag_version "$normalized" "$upgrade"
 cmp "$scratch/dispatch-tag" "$TAG_FIXTURE_STATE/tags/0.2.0.json"
-require_accepted_release 0.2.0 "$upgrade"
 
-# Annotated tags retain their object identity while dispatch targets the peeled commit.
+# Annotated tags retain their object identity when requesting a release.
 initialize "$upgrade"
 git -C "$checkout" -c core.hooksPath=/dev/null tag -a 0.2.0 "$upgrade" -m 'Fixture annotated version'
 tag_object=$(git -C "$checkout" rev-parse refs/tags/0.2.0)
@@ -228,12 +221,11 @@ jq -n --arg revision "$upgrade" '{object:{type:"commit",sha:$revision}}' > "$TAG
 cp "$TAG_FIXTURE_STATE/tags/0.2.0.json" "$scratch/annotated-tag"
 require_success tag_version "$normalized" "$upgrade"
 cmp "$scratch/annotated-tag" "$TAG_FIXTURE_STATE/tags/0.2.0.json"
-require_accepted_release 0.2.0 "$upgrade"
 
 # Readback must catch an ownership change before any release is scheduled.
 initialize "$upgrade"
 printf '%s\n' "$initial" > "$TAG_FIXTURE_STATE/move-after-create"
 expect_blocked tag_version "$normalized" "$upgrade"
 require_tag_owner 0.2.0 "$initial"
-[[ ! -f "$TAG_FIXTURE_STATE/accepted/0.2.0.json" ]]
-echo 'Tag fixture passed: committed versions, immutable commit ownership, annotated tags and create/dispatch recovery'
+[[ ! -f "$TAG_FIXTURE_STATE/accepted/request.json" ]]
+echo 'Tag fixture passed: committed versions, immutable commit ownership, annotated tags and create/dispatch retry safety'

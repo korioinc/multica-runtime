@@ -1,4 +1,4 @@
-name: Release runtime image
+name: Release
 
 on:
   workflow_dispatch:

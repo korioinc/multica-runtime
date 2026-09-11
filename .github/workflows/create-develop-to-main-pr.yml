@@ -2,7 +2,7 @@ name: Create develop to main PR
 
 on:
   pull_request:
-    branches: [develop]
+    branches: [develop, main]
   push:
     branches: [develop]
   repository_dispatch:
@@ -58,7 +58,7 @@ jobs:
           reason=$(jq -r --arg head_sha "$head_sha" '
             if .state == "closed" then "PR is already closed or merged."
             elif .head.sha != $head_sha then "PR head changed since this run was queued."
-            elif .base.ref != "develop" then "PR no longer targets develop."
+            elif .base.ref != "develop" and .base.ref != "main" then "PR no longer targets develop or main."
             else "" end' <<<"$pr")
           if [[ -n "$reason" ]]; then
             printf 'Skipping PR #%s: %s\n' "$number" "$reason" | tee -a "$GITHUB_STEP_SUMMARY"

@@ -8,6 +8,8 @@ cloud and database clients, and a virtual desktop. Published for `linux/amd64` a
 docker pull ghcr.io/korioinc/multica-runtime:latest
 ```
 
+For development testing, use `ghcr.io/korioinc/multica-runtime:develop`.
+
 Use this image with
 [Multica Runtime Controller](https://github.com/korioinc/multica-runtime-controller)
 to run agents in Kubernetes task-worker Pods.
@@ -169,9 +171,12 @@ separate registry caches for each architecture and exports intermediate layers.
 
 By default, builds load the image into the local Docker daemon. Pass
 `--docker-archive PATH` to export a Docker image archive for a later
-`docker load --input PATH`. CI exports the archive, removes the job's local
-BuildKit cache, then loads and deletes the archive to reduce disk usage during
-image loading. The registry caches remain available for subsequent builds.
+`docker load --input PATH`. Release and PR builds export the archive, remove the
+job's local BuildKit cache, then load and delete the archive to reduce disk usage
+during image loading. Develop builds use `--push-by-digest METADATA_PATH` to
+export an untagged OCI manifest, remove local build layers, and pull that exact
+digest for native verification. These two output options are mutually exclusive.
+The registry caches remain available for subsequent builds.
 
 ## Verification
 
@@ -202,8 +207,46 @@ all transitive dependencies or guarantee byte-identical rebuilds.
 
 ## Releases
 
-Update [VERSION](VERSION) explicitly when preparing a release. The develop → main
-PR workflow creates one promotion PR when develop is ahead of main and no open
-promotion PR exists. Source checks and native amd64 and arm64 image verification
-run in the release workflow before publishing. The workflows do not change
-VERSION or create release-preparation commits.
+| Event | Verification and publication |
+| --- | --- |
+| PR into `develop` | Source, public build inputs, and release automation checks |
+| Push to `develop` | Source checks, one native build and execution check per architecture, then publication of `:develop` |
+| Same-repository `develop` → `main` PR | Reuses the develop commit's `runtime-image` check without another image build |
+| Other PR into `main`, including forks | Source checks and native image verification, with read-only permissions |
+| Push to `main` with an increased `VERSION` | Creates the immutable version tag and dispatches the release workflow on `main` |
+
+The develop → main PR workflow maintains one promotion PR when develop is ahead
+of main. Configure `runtime-image` as the required image check for `main` so the
+promotion PR uses the successful check from its develop head commit. The
+`develop-image-reused` job only explains this reuse; it does not replace the
+native verification check. A fork branch named `develop` receives its own build.
+
+Develop publication combines the two verified OCI digests without rebuilding.
+Only `:develop` moves, and only while the source is still the current develop
+head. Serialized runs and recorded run/attempt ownership prevent older runs from
+replacing a newer publication. A failed architecture prevents publication.
+Develop writes separate `develop-buildcache-amd64` and `develop-buildcache-arm64`
+caches and can import the release caches; PR builds only import caches.
+
+Update [VERSION](VERSION) explicitly when preparing a release. Release automation
+runs from the selected `main` workflow revision, validates the requested tag and
+original commit against main history, and checks out that source separately.
+Native release builds retain their own version/revision metadata, candidate
+reuse on retry, immutable version tags, and ordered `:latest` promotion. The
+workflows do not change VERSION or create release-preparation commits.
+
+To rebuild the current development image manually:
+
+```sh
+gh workflow run develop-image.yml --ref develop
+```
+
+To retry an existing release, supply its original full commit SHA and run the
+workflow on `main`:
+
+```sh
+gh workflow run release.yml --ref main \
+  -f tag=RELEASE_VERSION -f expected_revision=FULL_ORIGINAL_COMMIT_SHA
+```
+
+Creating or pushing a version tag manually no longer starts release publication.

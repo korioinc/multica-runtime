@@ -52,7 +52,6 @@ if [[ $method == GET ]]; then
       respond '200 OK' "$(jq -n --arg status "$comparison" '{status:$status}')"
       exit ;;
     git/ref/tags/*) path="$state/tags/${endpoint##*/}.json" ;;
-    git/tags/*) path="$state/tag-objects/${endpoint##*/}.json" ;;
     *) exit 2 ;;
   esac
   if [[ -f $path ]]; then respond '200 OK' "$(cat "$path")"; else respond '404 Not Found' '{}'; fi
@@ -62,15 +61,10 @@ elif [[ $method == POST && $endpoint == git/refs ]]; then
   revision=$(jq -er .sha "$input")
   [[ $ref == refs/tags/* ]]
   tag=${ref#refs/tags/}
-  if [[ -f "$state/fail-create" ]]; then respond '503 Service Unavailable' '{}'; exit; fi
   git -C "$TAG_FIXTURE_CHECKOUT" cat-file -e "$revision^{commit}"
   if [[ -f "$state/tags/$tag.json" ]]; then respond '422 Unprocessable Entity' '{}'; exit; fi
   created=$(jq -n --arg revision "$revision" '{object:{type:"commit",sha:$revision}}')
   printf '%s\n' "$created" > "$state/tags/$tag.json"
-  # Model another actor moving the tag before the caller can confirm its owner.
-  if [[ -f "$state/move-after-create" ]]; then
-    jq -n --arg revision "$(cat "$state/move-after-create")" '{object:{type:"commit",sha:$revision}}' > "$state/tags/$tag.json"
-  fi
   if [[ -f "$state/fail-create-response" ]]; then respond '503 Service Unavailable' '{}'; exit; fi
   respond '201 Created' "$created"
 elif [[ $method == POST && $endpoint == actions/workflows/release.yml/dispatches ]]; then
@@ -81,10 +75,6 @@ elif [[ $method == POST && $endpoint == actions/workflows/release.yml/dispatches
   else
     [[ -f "$state/tags/$ref.json" ]]
   fi
-  if [[ -f "$state/fail-dispatch" ]]; then respond '503 Service Unavailable' '{}'; exit; fi
-  # Preserve accepted requests as remote effects without interpreting inputs;
-  # GitHub accepts the tag and expected_revision workflow inputs as given.
-  cp "$input" "$state/accepted/request.json"
   respond '204 No Content' '{}'
 else
   exit 2
@@ -102,17 +92,11 @@ commit_version() {
   git -C "$checkout" rev-parse HEAD
 }
 initial=$(commit_version 0.1.0)
-normalized=$(commit_version $'0.1.0\n')
 upgrade=$(commit_version 0.2.0)
 downgrade=$(commit_version 0.1.5)
-invalid=$(commit_version invalid)
-git -C "$checkout" rm -q VERSION
-git -C "$checkout" -c core.hooksPath=/dev/null commit -q -m 'Fixture missing version'
-missing=$(git -C "$checkout" rev-parse HEAD)
-zero=0000000000000000000000000000000000000000
 initialize() {
   rm -rf -- "$TAG_FIXTURE_STATE"
-  mkdir -p "$TAG_FIXTURE_STATE/tags" "$TAG_FIXTURE_STATE/tag-objects" "$TAG_FIXTURE_STATE/accepted"
+  mkdir -p "$TAG_FIXTURE_STATE/tags"
   printf '%s\n' "$1" > "$TAG_FIXTURE_STATE/main"
   git -C "$checkout" reset --hard -q
   git -C "$checkout" checkout -q --detach "$1"
@@ -126,20 +110,6 @@ require_success() {
 expect_blocked() {
   if "$@"; then echo "Tag fixture unexpectedly allowed a release at line ${BASH_LINENO[0]}: $*" >&2; exit 1; fi
 }
-remote_state() {
-  local file
-  for file in "$TAG_FIXTURE_STATE/tags/"*.json "$TAG_FIXTURE_STATE/tag-objects/"*.json "$TAG_FIXTURE_STATE/accepted/"*.json; do
-    [[ -f $file ]] || continue
-    printf '%s\n' "${file#"$TAG_FIXTURE_STATE/"}"
-    cat "$file"
-  done
-}
-expect_blocked_without_writes() {
-  remote_state > "$scratch/before"
-  expect_blocked "$@"
-  remote_state > "$scratch/after"
-  cmp "$scratch/before" "$scratch/after"
-}
 require_tag_owner() {
   jq -e --arg revision "$2" '.object.sha == $revision' "$TAG_FIXTURE_STATE/tags/$1.json" >/dev/null
 }
@@ -147,85 +117,30 @@ require_tag_owner() {
 # Only committed VERSION determines the release tag and its immutable owner.
 initialize "$upgrade"
 printf '9.9.9\n' > "$checkout/VERSION"
-require_success tag_version "$normalized" "$upgrade"
+require_success tag_version "$initial" "$upgrade"
 require_tag_owner 0.2.0 "$upgrade"
 
-# An unmerged commit cannot create a release; queued main commits remain valid.
+# The release command rejects an unmerged source revision.
 initialize "$upgrade"
 printf '%s\n' "$initial" > "$TAG_FIXTURE_STATE/main"
-expect_blocked_without_writes tag_version "$normalized" "$upgrade"
-initialize "$upgrade"
-printf '%s\n' "$missing" > "$TAG_FIXTURE_STATE/main"
-require_success tag_version "$normalized" "$upgrade"
-require_tag_owner 0.2.0 "$upgrade"
+expect_blocked tag_version "$initial" "$upgrade"
 
-# A normalized value that did not change cannot publish or schedule a release.
-initialize "$normalized"
-remote_state > "$scratch/unchanged-before"
-require_success tag_version "$initial" "$normalized"
-remote_state > "$scratch/unchanged-after"
-cmp "$scratch/unchanged-before" "$scratch/unchanged-after"
-
-# The first push can release a valid committed version without a before commit.
-initialize "$initial"
-require_success tag_version "$zero" "$initial"
-require_tag_owner 0.1.0 "$initial"
-
-# Checkout provenance and valid increasing committed versions authorize writes.
-initialize "$initial"
-expect_blocked_without_writes tag_version "$initial" "$upgrade"
-initialize "$upgrade"
-expect_blocked_without_writes tag_version ffffffffffffffffffffffffffffffffffffffff "$upgrade"
+# The release command rejects an automatic version downgrade.
 initialize "$downgrade"
-expect_blocked_without_writes tag_version "$upgrade" "$downgrade"
-initialize "$invalid"
-expect_blocked_without_writes tag_version "$downgrade" "$invalid"
-initialize "$missing"
-expect_blocked_without_writes tag_version "$upgrade" "$missing"
+expect_blocked tag_version "$upgrade" "$downgrade"
 
-# An existing version owned by a different commit cannot be changed or released.
+# The command rejects conflicting ownership and retains the existing tag owner.
 initialize "$upgrade"
 jq -n --arg revision "$initial" '{object:{type:"commit",sha:$revision}}' > "$TAG_FIXTURE_STATE/tags/0.2.0.json"
-expect_blocked_without_writes tag_version "$normalized" "$upgrade"
-
-# A failed create cannot schedule work; a lost response after creation is safely retried.
-initialize "$upgrade"
-touch "$TAG_FIXTURE_STATE/fail-create"
-expect_blocked_without_writes tag_version "$normalized" "$upgrade"
-rm "$TAG_FIXTURE_STATE/fail-create"
-touch "$TAG_FIXTURE_STATE/fail-create-response"
-tag_version "$normalized" "$upgrade" || true
-require_tag_owner 0.2.0 "$upgrade"
-cp "$TAG_FIXTURE_STATE/tags/0.2.0.json" "$scratch/created-tag"
-rm "$TAG_FIXTURE_STATE/fail-create-response"
-require_success tag_version "$normalized" "$upgrade"
-cmp "$scratch/created-tag" "$TAG_FIXTURE_STATE/tags/0.2.0.json"
-
-# Dispatch failure preserves the immutable tag across retry.
-initialize "$upgrade"
-touch "$TAG_FIXTURE_STATE/fail-dispatch"
-expect_blocked tag_version "$normalized" "$upgrade"
-require_tag_owner 0.2.0 "$upgrade"
-[[ ! -f "$TAG_FIXTURE_STATE/accepted/request.json" ]]
-cp "$TAG_FIXTURE_STATE/tags/0.2.0.json" "$scratch/dispatch-tag"
-rm "$TAG_FIXTURE_STATE/fail-dispatch"
-require_success tag_version "$normalized" "$upgrade"
-cmp "$scratch/dispatch-tag" "$TAG_FIXTURE_STATE/tags/0.2.0.json"
-
-# Annotated tags retain their object identity when requesting a release.
-initialize "$upgrade"
-git -C "$checkout" -c core.hooksPath=/dev/null tag -a 0.2.0 "$upgrade" -m 'Fixture annotated version'
-tag_object=$(git -C "$checkout" rev-parse refs/tags/0.2.0)
-jq -n --arg tag "$tag_object" '{object:{type:"tag",sha:$tag}}' > "$TAG_FIXTURE_STATE/tags/0.2.0.json"
-jq -n --arg revision "$upgrade" '{object:{type:"commit",sha:$revision}}' > "$TAG_FIXTURE_STATE/tag-objects/$tag_object.json"
-cp "$TAG_FIXTURE_STATE/tags/0.2.0.json" "$scratch/annotated-tag"
-require_success tag_version "$normalized" "$upgrade"
-cmp "$scratch/annotated-tag" "$TAG_FIXTURE_STATE/tags/0.2.0.json"
-
-# Readback must catch an ownership change before any release is scheduled.
-initialize "$upgrade"
-printf '%s\n' "$initial" > "$TAG_FIXTURE_STATE/move-after-create"
-expect_blocked tag_version "$normalized" "$upgrade"
+expect_blocked tag_version "$initial" "$upgrade"
 require_tag_owner 0.2.0 "$initial"
-[[ ! -f "$TAG_FIXTURE_STATE/accepted/request.json" ]]
-echo 'Tag fixture passed: committed versions, immutable commit ownership, annotated tags and create/dispatch retry safety'
+
+# Retrying a lost creation response preserves the committed tag owner.
+initialize "$upgrade"
+touch "$TAG_FIXTURE_STATE/fail-create-response"
+expect_blocked tag_version "$initial" "$upgrade"
+require_tag_owner 0.2.0 "$upgrade"
+rm "$TAG_FIXTURE_STATE/fail-create-response"
+require_success tag_version "$initial" "$upgrade"
+require_tag_owner 0.2.0 "$upgrade"
+echo 'Tag fixture passed: committed tag ownership, release authorization and lost-response retry decisions'

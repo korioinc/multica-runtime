@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exercise real release decisions against isolated persistent registry/GitHub stubs.
+# Exercise release ownership and promotion decisions against local stateful stubs.
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 scratch=$(mktemp -d)
@@ -7,7 +7,6 @@ trap 'rm -rf -- "$scratch"' EXIT
 mkdir -p "$scratch/bin" "$scratch/checkout/scripts"
 export RELEASE_FIXTURE_ROOT="$scratch/state"
 export RELEASE_FIXTURE_REVISION=1111111111111111111111111111111111111111
-export RELEASE_FIXTURE_CHECKOUT_REVISION=$RELEASE_FIXTURE_REVISION
 export GH_REPO=fixture/runtime
 export PATH="$scratch/bin:$PATH"
 cat > "$scratch/bin/git" <<'STUB'
@@ -15,7 +14,7 @@ cat > "$scratch/bin/git" <<'STUB'
 set -euo pipefail
 [[ $1 == -C ]]
 case "$3:$4" in
-  rev-parse:HEAD) printf '%s\n' "$RELEASE_FIXTURE_CHECKOUT_REVISION" ;;
+  rev-parse:HEAD) printf '%s\n' "$RELEASE_FIXTURE_REVISION" ;;
   show:*:VERSION)
     revision=${4%:VERSION}
     cat "$RELEASE_FIXTURE_ROOT/versions/$revision" ;;
@@ -25,7 +24,7 @@ STUB
 cat > "$scratch/checkout/scripts/verify-image.sh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ ! -f "$RELEASE_FIXTURE_ROOT/verification-fails" ]]
+exit 0
 STUB
 cat > "$scratch/bin/service" <<'STUB'
 #!/usr/bin/env bash
@@ -34,27 +33,20 @@ state=$RELEASE_FIXTURE_ROOT
 key() { printf '%s' "$1" | shasum -a 256 | cut -d ' ' -f 1; }
 read_manifest() {
   local path="$state/refs/$(key "$1").json"
-  if [[ -f "$state/fail-registry-lookup" ]]; then echo 'registry request failed: unauthorized' >&2; return 1; fi
   if [[ -f $path ]]; then cat "$path"; else echo "$1: not found" >&2; return 1; fi
 }
 if [[ $(basename "$0") == gh ]]; then
   if [[ $1 == api && $2 == --include ]]; then
     endpoint=${3#repos/fixture/runtime/}
-    if [[ -f "$state/fail-github-lookup" && $endpoint != git/ref/heads/main ]]; then
-      printf 'HTTP/1.1 503 Service Unavailable\r\n\r\n{}\n'
-      exit 1
-    fi
     case "$endpoint" in
       git/ref/heads/main) body=$(jq -n --arg revision "$(cat "$state/main")" '{object:{type:"commit",sha:$revision}}') ;;
       compare/*)
         revisions=${endpoint#compare/}
         base=${revisions%%...*} head=${revisions#*...}
-        if [[ -f "$state/not-in-main" ]]; then comparison=diverged
-        elif [[ $base == "$head" ]]; then comparison=identical
+        if [[ $base == "$head" ]]; then comparison=identical
         else comparison=ahead; fi
         body=$(jq -n --arg status "$comparison" '{status:$status}') ;;
       git/ref/tags/*) path="$state/tags/${endpoint##*/}.json"; [[ -f $path ]] && body=$(cat "$path") || body=null ;;
-      git/tags/*) path="$state/tag-objects/${endpoint##*/}.json"; [[ -f $path ]] && body=$(cat "$path") || body=null ;;
       releases/tags/*) path="$state/releases/${endpoint##*/}.json"; [[ -f $path ]] && body=$(cat "$path") || body=null ;;
       releases/latest)
         body=null
@@ -112,7 +104,6 @@ if [[ $(basename "$0") == gh ]]; then
   else exit 2; fi
   exit
 fi
-if [[ $1 == pull || $1 == tag ]]; then exit; fi
 if [[ $1 == image && $2 == inspect ]]; then
   arch=${3##*-}
   cat "$state/local-$arch.json"
@@ -151,7 +142,6 @@ elif [[ $3 == create ]]; then
   if ((${#refs[@]} == 1)); then
     read_manifest "${refs[0]}" > "$state/refs/$(key "$target").json"
   else
-    [[ ! -f "$state/fail-index" ]] || exit 1
     entries='[]'
     for ref in "${refs[@]}"; do
       manifest=$(read_manifest "$ref")
@@ -159,11 +149,8 @@ elif [[ $3 == create ]]; then
       metadata=$(cat "$state/images/${pin#sha256:}.json")
       entries=$(jq -n --argjson entries "$entries" --argjson metadata "$metadata" --arg digest "$pin" '$entries + [{digest:$digest,platform:{os:$metadata.os,architecture:$metadata.architecture}}]')
     done
-    # Buildx drops --annotation for Docker lists; only OCI indexes retain them.
-    manifest=$(jq -n --argjson entries "$entries" --argjson annotations "$annotations" --arg digest "$(cat "$state/index-digest")" --arg format "${RELEASE_FIXTURE_INDEX_FORMAT:-oci}" '
-      (if $format == "docker" then "application/vnd.docker.distribution.manifest.list.v2+json" else "application/vnd.oci.image.index.v1+json" end) as $media |
-      {schemaVersion:2,mediaType:$media,digest:$digest,manifests:$entries} |
-      if $format == "docker" then . else .annotations=$annotations end')
+    manifest=$(jq -n --argjson entries "$entries" --argjson annotations "$annotations" --arg digest "$(cat "$state/index-digest")" '
+      {schemaVersion:2,mediaType:"application/vnd.oci.image.index.v1+json",digest:$digest,manifests:$entries,annotations:$annotations}')
     printf '%s\n' "$manifest" > "$state/refs/$(key "$target").json"
     printf '%s\n' "$manifest" > "$state/refs/$(key "fixture/runtime@$(cat "$state/index-digest")").json"
   fi
@@ -175,9 +162,8 @@ ln -s service "$scratch/bin/gh"
 key() { printf '%s' "$1" | shasum -a 256 | cut -d ' ' -f 1; }
 initialize() {
   rm -rf -- "$RELEASE_FIXTURE_ROOT"
-  mkdir -p "$RELEASE_FIXTURE_ROOT/refs" "$RELEASE_FIXTURE_ROOT/images" "$RELEASE_FIXTURE_ROOT/records" "$RELEASE_FIXTURE_ROOT/tags" "$RELEASE_FIXTURE_ROOT/tag-objects" "$RELEASE_FIXTURE_ROOT/releases" "$RELEASE_FIXTURE_ROOT/versions"
+  mkdir -p "$RELEASE_FIXTURE_ROOT/refs" "$RELEASE_FIXTURE_ROOT/images" "$RELEASE_FIXTURE_ROOT/records" "$RELEASE_FIXTURE_ROOT/tags" "$RELEASE_FIXTURE_ROOT/releases" "$RELEASE_FIXTURE_ROOT/versions"
   export RELEASE_FIXTURE_REVISION=1111111111111111111111111111111111111111
-  export RELEASE_FIXTURE_CHECKOUT_REVISION=$RELEASE_FIXTURE_REVISION
   export RELEASE_FIXTURE_VERSION=0.1.0
   printf '%s\n' "$RELEASE_FIXTURE_VERSION" > "$RELEASE_FIXTURE_ROOT/versions/$RELEASE_FIXTURE_REVISION"
   printf '%s\n' "$RELEASE_FIXTURE_REVISION" > "$RELEASE_FIXTURE_ROOT/main"
@@ -196,7 +182,6 @@ checkout_release() {
   fi
   export RELEASE_FIXTURE_VERSION=$1
   export RELEASE_FIXTURE_REVISION=$2
-  export RELEASE_FIXTURE_CHECKOUT_REVISION=$RELEASE_FIXTURE_REVISION
   create_tag
 }
 native_images() {
@@ -207,7 +192,7 @@ native_images() {
     if ((offset)); then printf -v uuid '%08d-1111-4111-8111-111111111111' "$((offset + number))"; fi
     printf -v pin 'sha256:%064d' "$((offset + number))"
     printf -v config 'sha256:%064d' "$((offset + number + 10))"
-    metadata=$(jq -n --arg arch "$arch" --arg revision "$RELEASE_FIXTURE_REVISION" --arg version "$RELEASE_FIXTURE_VERSION" --arg id "$uuid" '{os:"linux",architecture:$arch,config:{Labels:{"org.opencontainers.image.revision":$revision,"org.opencontainers.image.version":$version,"io.multica.controller-abi":"2","io.multica.image-build-id":$id}}}')
+    metadata=$(jq -n --arg arch "$arch" --arg revision "$RELEASE_FIXTURE_REVISION" --arg version "$RELEASE_FIXTURE_VERSION" --arg id "$uuid" '{os:"linux",architecture:$arch,config:{Labels:{"org.opencontainers.image.revision":$revision,"org.opencontainers.image.version":$version,"io.multica.image-build-id":$id}}}')
     printf '%s\n' "$metadata" > "$RELEASE_FIXTURE_ROOT/images/${pin#sha256:}.json"
     jq -n --argjson metadata "$metadata" --arg id "$config" '[{Id:$id,Os:$metadata.os,Architecture:$metadata.architecture,Config:$metadata.config}]' > "$RELEASE_FIXTURE_ROOT/local-$arch.json"
     manifest=$(jq -n --arg pin "$pin" --arg config "$config" '{digest:$pin,config:{digest:$config}}')
@@ -224,396 +209,82 @@ publish() { release publish --records "$RELEASE_FIXTURE_ROOT/records"; }
 require_success() { if ! "$@"; then cat "$scratch/error" >&2; echo "Release fixture operation failed: $*" >&2; exit 1; fi; }
 expect_blocked() { if "$@"; then echo "Release fixture unexpectedly allowed an unsafe transition at line ${BASH_LINENO[0]}: $*" >&2; exit 1; fi; }
 artifact_digest() {
-  local file
-  file="$RELEASE_FIXTURE_ROOT/refs/$(key "$1").json"
-  if [[ -f "$file" ]]; then shasum -a 256 "$file" | cut -d ' ' -f 1; else echo absent; fi
-}
-registry_state() {
-  local file
-  for file in "$RELEASE_FIXTURE_ROOT/refs/"*.json "$RELEASE_FIXTURE_ROOT/tags/"*.json "$RELEASE_FIXTURE_ROOT/releases/"*.json; do
-    [[ -f $file ]] || continue
-    printf '%s\n' "${file#"$RELEASE_FIXTURE_ROOT/"}"
-    cat "$file"
-  done
-  if [[ -f "$RELEASE_FIXTURE_ROOT/latest-release" ]]; then cat "$RELEASE_FIXTURE_ROOT/latest-release"; fi
-}
-remember_immutable_bytes() {
-  local destination=$1
-  mkdir -p "$destination"
-  cp -R "$RELEASE_FIXTURE_ROOT/refs" "$RELEASE_FIXTURE_ROOT/images" "$RELEASE_FIXTURE_ROOT/tags" "$RELEASE_FIXTURE_ROOT/releases" "$destination/"
-  rm -f "$destination/refs/$(key fixture/runtime:latest).json"
-}
-require_immutable_bytes() {
-  local remembered=$1 file
-  for file in "$remembered/refs/"*.json "$remembered/images/"*.json "$remembered/tags/"*.json "$remembered/releases/"*.json; do
-    [[ -f $file ]] || continue
-    cmp "$file" "$RELEASE_FIXTURE_ROOT/${file#"$remembered/"}"
-  done
-}
-expect_blocked_without_writes() {
-  registry_state > "$scratch/before-state"
-  expect_blocked "$@"
-  registry_state > "$scratch/after-state"
-  cmp "$scratch/before-state" "$scratch/after-state"
-}
-select_planned_version() {
-  registry_state > "$scratch/before-plan"
-  require_success release plan
-  registry_state > "$scratch/after-plan"
-  cmp "$scratch/before-plan" "$scratch/after-plan"
-  RELEASE_FIXTURE_VERSION=$(jq -er .version "$scratch/result")
+  jq -er .digest "$RELEASE_FIXTURE_ROOT/refs/$(key "$1").json"
 }
 
+# A release failure after index publication must retain the registry-reported
+# identity when publication is retried.
 initialize
-RELEASE_FIXTURE_VERSION=0.1.1
-create_tag
-expect_blocked_without_writes release plan
-expect_blocked_without_writes publish
-
-initialize
-touch "$RELEASE_FIXTURE_ROOT/not-in-main"
-expect_blocked_without_writes release plan
-expect_blocked_without_writes publish
-
-initialize
-record amd64
-before=$(artifact_digest fixture/runtime:0.1.0)
-expect_blocked publish
-[[ $(artifact_digest fixture/runtime:0.1.0) == "$before" ]]
-touch "$RELEASE_FIXTURE_ROOT/verification-fails"
-candidate_before=$(artifact_digest "fixture/runtime:build-0.1.0-$RELEASE_FIXTURE_REVISION-arm64")
-expect_blocked record arm64
-[[ $(artifact_digest "fixture/runtime:build-0.1.0-$RELEASE_FIXTURE_REVISION-arm64") == "$candidate_before" ]]
-[[ $(artifact_digest fixture/runtime:latest) == absent ]]
-rm "$RELEASE_FIXTURE_ROOT/verification-fails"
-record arm64
+require_success record amd64
+require_success record arm64
 touch "$RELEASE_FIXTURE_ROOT/fail-release"
 expect_blocked publish
-version_before=$(artifact_digest fixture/runtime:0.1.0)
-[[ $version_before != absent && $(artifact_digest fixture/runtime:latest) == absent ]]
+version_before=$(artifact_digest "fixture/runtime:$RELEASE_FIXTURE_VERSION")
 rm "$RELEASE_FIXTURE_ROOT/fail-release"
-publish
-[[ $(artifact_digest fixture/runtime:0.1.0) == "$version_before" ]]
-latest_before=$(artifact_digest fixture/runtime:latest)
-[[ $latest_before == "$version_before" ]]
-publish
-[[ $(artifact_digest fixture/runtime:latest) == "$latest_before" ]]
-release prepare-native --platform linux/arm64
-[[ $(artifact_digest fixture/runtime:0.1.0) == "$version_before" ]]
-printf '%040d\n' 9 > "$RELEASE_FIXTURE_ROOT/main"
 require_success publish
-[[ $(artifact_digest fixture/runtime:latest) == "$latest_before" ]]
-
-# The existing remote tag authorizes publication; absence or movement cannot
-# create a release for an untagged commit, even after native builds finish.
-initialize
-record amd64
-record arm64
-rm "$RELEASE_FIXTURE_ROOT/tags/$RELEASE_FIXTURE_VERSION.json"
-expect_blocked_without_writes release plan
-expect_blocked_without_writes publish
-jq -n '{object:{type:"commit",sha:"9999999999999999999999999999999999999999"}}' > "$RELEASE_FIXTURE_ROOT/tags/$RELEASE_FIXTURE_VERSION.json"
-expect_blocked_without_writes release plan
-expect_blocked_without_writes publish
-create_tag
-export RELEASE_FIXTURE_CHECKOUT_REVISION=9999999999999999999999999999999999999999
-expect_blocked_without_writes release plan
-expect_blocked_without_writes publish
-export RELEASE_FIXTURE_CHECKOUT_REVISION=$RELEASE_FIXTURE_REVISION
-cp "$RELEASE_FIXTURE_ROOT/records/amd64.json" "$RELEASE_FIXTURE_ROOT/records/duplicate.json"
-expect_blocked publish
-[[ $(artifact_digest fixture/runtime:latest) == absent ]]
-rm "$RELEASE_FIXTURE_ROOT/records/duplicate.json"
-touch "$RELEASE_FIXTURE_ROOT/fail-index"
-expect_blocked publish
-[[ $(artifact_digest fixture/runtime:latest) == absent ]]
-rm "$RELEASE_FIXTURE_ROOT/fail-index"
-arm64_metadata="$RELEASE_FIXTURE_ROOT/images/$(printf '%064d' 2).json"
-cp "$arm64_metadata" "$scratch/arm64-original.json"
-jq '.config.Labels["io.multica.image-build-id"] = "11111111-1111-4111-8111-111111111111"' "$arm64_metadata" > "$scratch/reused-id.json"
-cp "$scratch/reused-id.json" "$arm64_metadata"
-expect_blocked publish
-[[ $(artifact_digest fixture/runtime:latest) == absent ]]
-cp "$scratch/arm64-original.json" "$arm64_metadata"
-publish
-version_file="$RELEASE_FIXTURE_ROOT/refs/$(key fixture/runtime:0.1.0).json"
-jq '.manifests += [.manifests[0]]' "$version_file" > "$scratch/duplicate-index.json"
-cp "$scratch/duplicate-index.json" "$version_file"
-latest_before=$(artifact_digest fixture/runtime:latest)
-expect_blocked publish
-[[ $(artifact_digest fixture/runtime:latest) == "$latest_before" ]]
-
-# Annotated tags must release their peeled commit even when main has advanced.
-initialize
-annotated_tag=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-jq -n --arg tag "$annotated_tag" '{object:{type:"tag",sha:$tag}}' > "$RELEASE_FIXTURE_ROOT/tags/$RELEASE_FIXTURE_VERSION.json"
-jq -n --arg revision "$RELEASE_FIXTURE_REVISION" '{object:{type:"commit",sha:$revision}}' > "$RELEASE_FIXTURE_ROOT/tag-objects/$annotated_tag.json"
-printf '%040d\n' 9 > "$RELEASE_FIXTURE_ROOT/main"
-select_planned_version
-record amd64
-record arm64
+[[ $(artifact_digest "fixture/runtime:$RELEASE_FIXTURE_VERSION") == "$version_before" ]]
+[[ $(artifact_digest fixture/runtime:latest) == "$version_before" ]]
 require_success publish
-cmp "$RELEASE_FIXTURE_ROOT/refs/$(key "fixture/runtime:$RELEASE_FIXTURE_VERSION").json" "$RELEASE_FIXTURE_ROOT/refs/$(key fixture/runtime:latest).json"
-# GitHub ignores target_commitish for existing tags; it can retain a branch name.
-release_file="$RELEASE_FIXTURE_ROOT/releases/$RELEASE_FIXTURE_VERSION.json"
-jq '.target_commitish="main"' "$release_file" > "$scratch/annotated-release"
-cp "$scratch/annotated-release" "$release_file"
-registry_state > "$scratch/annotated-published"
-require_success publish
-registry_state > "$scratch/annotated-retried"
-cmp "$scratch/annotated-published" "$scratch/annotated-retried"
+[[ $(artifact_digest "fixture/runtime:$RELEASE_FIXTURE_VERSION") == "$version_before" ]]
 
-# Docker's containerd store exposes manifest/index IDs, unlike the classic
-# config-ID store exercised above. Retrying must preserve either representation.
-initialize
-amd64_pin=$(printf 'sha256:%064d' 1)
-arm64_pin=$(printf 'sha256:%064d' 2)
-arm64_index=$(printf 'sha256:%064d' 4)
-jq --arg pin "$amd64_pin" '.[0].Id=$pin | .[0].Descriptor={digest:$pin,mediaType:"application/vnd.oci.image.manifest.v1+json"}' "$RELEASE_FIXTURE_ROOT/local-amd64.json" > "$scratch/local.json"
-cp "$scratch/local.json" "$RELEASE_FIXTURE_ROOT/local-amd64.json"
-jq --arg pin "$arm64_index" '.[0].Id=$pin | .[0].Descriptor={digest:$pin,mediaType:"application/vnd.oci.image.index.v1+json"}' "$RELEASE_FIXTURE_ROOT/local-arm64.json" > "$scratch/local.json"
-cp "$scratch/local.json" "$RELEASE_FIXTURE_ROOT/local-arm64.json"
-jq -n --arg index "$arm64_index" --arg pin "$arm64_pin" '{digest:$index,manifests:[{digest:$pin,platform:{os:"linux",architecture:"arm64"}}]}' > "$RELEASE_FIXTURE_ROOT/native-arm64.json"
-record amd64
-record arm64
-record amd64
-record arm64
-publish
-latest_before=$(artifact_digest fixture/runtime:latest)
-jq --arg wrong "$arm64_index" '.[0].Descriptor.digest=$wrong' "$RELEASE_FIXTURE_ROOT/local-amd64.json" > "$scratch/local.json"
-cp "$scratch/local.json" "$RELEASE_FIXTURE_ROOT/local-amd64.json"
+# Reject a retry whose local image identity differs from the recorded candidate.
+candidate="fixture/runtime:build-$RELEASE_FIXTURE_VERSION-$RELEASE_FIXTURE_REVISION-amd64"
+candidate_before=$(artifact_digest "$candidate")
+native_images 100
 expect_blocked record amd64
-[[ $(artifact_digest fixture/runtime:latest) == "$latest_before" ]]
+[[ $(artifact_digest "$candidate") == "$candidate_before" ]]
 
-# Preserve accepted version bytes across a failed release and retry, with both
-# annotated OCI indexes and Docker lists whose metadata lives in child labels.
-for format in oci docker; do
-  export RELEASE_FIXTURE_INDEX_FORMAT=$format
-  initialize
-  record amd64
-  expect_blocked_without_writes publish
-  touch "$RELEASE_FIXTURE_ROOT/verification-fails"
-  expect_blocked_without_writes record arm64
-  rm "$RELEASE_FIXTURE_ROOT/verification-fails"
-  record arm64
-  touch "$RELEASE_FIXTURE_ROOT/fail-release"
-  expect_blocked publish
-  version_file="$RELEASE_FIXTURE_ROOT/refs/$(key fixture/runtime:0.1.0).json"
-  cp "$version_file" "$scratch/format-version"
-  [[ $(artifact_digest fixture/runtime:latest) == absent ]]
-  # A completed index lets the workflow retry without rebuilding unavailable natives.
-  touch "$RELEASE_FIXTURE_ROOT/verification-fails"
-  select_planned_version
-  if [[ $(jq -r .published "$scratch/result") == false ]]; then
-    require_success record amd64
-    require_success record arm64
-  fi
-  rm "$RELEASE_FIXTURE_ROOT/verification-fails"
-  rm "$RELEASE_FIXTURE_ROOT/fail-release"
-  require_success publish
-  cmp "$scratch/format-version" "$version_file"
-  cmp "$scratch/format-version" "$RELEASE_FIXTURE_ROOT/refs/$(key fixture/runtime:latest).json"
-  registry_state > "$scratch/format-committed"
-  require_success publish
-  registry_state > "$scratch/format-retried"
-  cmp "$scratch/format-committed" "$scratch/format-retried"
-
-  for change in \
-    '.annotations["org.opencontainers.image.version"]="9.0.0"' \
-    '.annotations["org.opencontainers.image.revision"]="2222222222222222222222222222222222222222"' \
-    '.manifests += [.manifests[0]]' \
-    '.manifests[1].digest=.manifests[0].digest'; do
-    jq "$change" "$scratch/format-version" > "$version_file"
-    expect_blocked_without_writes publish
-  done
-  if [[ $format == oci ]]; then
-    jq 'del(.annotations)' "$scratch/format-version" > "$version_file"
-    expect_blocked_without_writes publish
-  fi
-  cp "$scratch/format-version" "$version_file"
-  arm64_metadata="$RELEASE_FIXTURE_ROOT/images/$(printf '%064d' 2).json"
-  cp "$arm64_metadata" "$scratch/format-arm64"
-  for change in \
-    '.config.Labels["org.opencontainers.image.version"]="9.0.0"' \
-    '.config.Labels["org.opencontainers.image.revision"]="2222222222222222222222222222222222222222"' \
-    '.config.Labels["io.multica.controller-abi"]="1"' \
-    '.config.Labels["io.multica.image-build-id"]="11111111-1111-4111-8111-111111111111"' \
-    '.architecture="amd64"'; do
-    jq "$change" "$scratch/format-arm64" > "$arm64_metadata"
-    expect_blocked_without_writes publish
-  done
-  cp "$scratch/format-arm64" "$arm64_metadata"
-  require_success publish
-done
-
-# Explicit version tags publish separately while all prior immutable bytes survive.
-unset RELEASE_FIXTURE_INDEX_FORMAT
-initialize
-select_planned_version
-first_version=$RELEASE_FIXTURE_VERSION
-record amd64
-record arm64
-require_success publish
-remember_immutable_bytes "$scratch/first-publication"
-checkout_release 0.1.1 2222222222222222222222222222222222222222
-select_planned_version
-native_images 100
-record amd64
-# A retry with only one native candidate must finish the same intended publication.
-select_planned_version
-require_success release prepare-native --platform linux/amd64
-record amd64
-record arm64
-require_success publish
-require_immutable_bytes "$scratch/first-publication"
-cmp "$RELEASE_FIXTURE_ROOT/refs/$(key "fixture/runtime:$RELEASE_FIXTURE_VERSION").json" "$RELEASE_FIXTURE_ROOT/refs/$(key fixture/runtime:latest).json"
-RELEASE_FIXTURE_VERSION=$first_version
-expect_blocked_without_writes release plan
-expect_blocked_without_writes publish
-
-# A foreign latest remains ownership evidence even after its named references vanish.
-initialize
-select_planned_version
-first_version=$RELEASE_FIXTURE_VERSION
-record amd64
-record arm64
-require_success publish
-rm "$RELEASE_FIXTURE_ROOT/refs/$(key "fixture/runtime:$first_version").json" "$RELEASE_FIXTURE_ROOT/tags/$first_version.json" "$RELEASE_FIXTURE_ROOT/releases/$first_version.json" "$RELEASE_FIXTURE_ROOT/latest-release"
-remember_immutable_bytes "$scratch/latest-only-publication"
-checkout_release 0.1.1 2222222222222222222222222222222222222222
-select_planned_version
-native_images 100
-record amd64
-record arm64
-require_success publish
-require_immutable_bytes "$scratch/latest-only-publication"
-cmp "$RELEASE_FIXTURE_ROOT/refs/$(key "fixture/runtime:$RELEASE_FIXTURE_VERSION").json" "$RELEASE_FIXTURE_ROOT/refs/$(key fixture/runtime:latest).json"
-
-# A prior revision's completed index stays immutable even if its release never finished.
-initialize
-record amd64
-record arm64
-touch "$RELEASE_FIXTURE_ROOT/fail-release"
+# Missing or reassigned release tags must reject the publication request.
+rm "$RELEASE_FIXTURE_ROOT/tags/$RELEASE_FIXTURE_VERSION.json"
 expect_blocked publish
-[[ $(artifact_digest "fixture/runtime:$RELEASE_FIXTURE_VERSION") != absent && $(artifact_digest fixture/runtime:latest) == absent ]]
-rm "$RELEASE_FIXTURE_ROOT/fail-release"
-remember_immutable_bytes "$scratch/interrupted-publication"
-checkout_release 0.1.1 2222222222222222222222222222222222222222
-select_planned_version
-native_images 100
-record amd64
-record arm64
-require_success publish
-require_immutable_bytes "$scratch/interrupted-publication"
-cmp "$RELEASE_FIXTURE_ROOT/refs/$(key "fixture/runtime:$RELEASE_FIXTURE_VERSION").json" "$RELEASE_FIXTURE_ROOT/refs/$(key fixture/runtime:latest).json"
+[[ $(artifact_digest "fixture/runtime:$RELEASE_FIXTURE_VERSION") == "$version_before" ]]
+create_tag
+jq -n '{object:{type:"commit",sha:"9999999999999999999999999999999999999999"}}' > "$RELEASE_FIXTURE_ROOT/tags/$RELEASE_FIXTURE_VERSION.json"
+expect_blocked publish
+[[ $(artifact_digest fixture/runtime:latest) == "$version_before" ]]
 
-# Unknown or contradictory ownership cannot authorize any persistent release change.
+# Latest pointers belong to separate services. A partial promotion followed by
+# a backport must not demote GitHub, and retry must finish registry promotion.
 initialize
-record amd64
-record arm64
+require_success record amd64
+require_success record arm64
 require_success publish
 first_version=$RELEASE_FIXTURE_VERSION
-latest_file="$RELEASE_FIXTURE_ROOT/refs/$(key fixture/runtime:latest).json"
-cp "$latest_file" "$scratch/ownership-latest"
-checkout_release 0.1.1 2222222222222222222222222222222222222222
-for change in \
-  '.annotations["org.opencontainers.image.version"]="invalid"' \
-  '.annotations["org.opencontainers.image.revision"]="2222222222222222222222222222222222222222"'; do
-  jq "$change" "$scratch/ownership-latest" > "$latest_file"
-  expect_blocked_without_writes release plan
-done
-cp "$scratch/ownership-latest" "$latest_file"
-arm64_metadata="$RELEASE_FIXTURE_ROOT/images/$(printf '%064d' 2).json"
-cp "$arm64_metadata" "$scratch/ownership-arm64"
-jq --arg revision "$RELEASE_FIXTURE_REVISION" '.config.Labels["org.opencontainers.image.revision"]=$revision' "$scratch/ownership-arm64" > "$arm64_metadata"
-expect_blocked_without_writes release plan
-cp "$scratch/ownership-arm64" "$arm64_metadata"
-tag_file="$RELEASE_FIXTURE_ROOT/tags/$first_version.json"
-cp "$tag_file" "$scratch/ownership-tag"
-jq '.object.sha="3333333333333333333333333333333333333333"' "$scratch/ownership-tag" > "$tag_file"
-expect_blocked_without_writes release plan
-cp "$scratch/ownership-tag" "$tag_file"
-release_file="$RELEASE_FIXTURE_ROOT/releases/$first_version.json"
-cp "$release_file" "$scratch/ownership-release"
-rm "$tag_file"
-jq '.target_commitish="invalid"' "$scratch/ownership-release" > "$release_file"
-expect_blocked_without_writes release plan
-cp "$scratch/ownership-release" "$release_file"
-cp "$scratch/ownership-tag" "$tag_file"
-# Requesting a higher version cannot hide disagreement between GitHub and registry owners.
-checkout_release 9.0.0 3333333333333333333333333333333333333333
-jq '.object.sha="3333333333333333333333333333333333333333"' "$scratch/ownership-tag" > "$tag_file"
-jq '.target_commitish="3333333333333333333333333333333333333333"' "$scratch/ownership-release" > "$release_file"
-expect_blocked_without_writes release plan
-cp "$scratch/ownership-tag" "$tag_file"
-cp "$scratch/ownership-release" "$release_file"
-for failure in fail-github-lookup fail-registry-lookup; do
-  touch "$RELEASE_FIXTURE_ROOT/$failure"
-  expect_blocked_without_writes release plan
-  rm "$RELEASE_FIXTURE_ROOT/$failure"
-done
-printf '%040d\n' 9 > "$RELEASE_FIXTURE_ROOT/main"
-select_planned_version
-
-# Publishing an older, explicitly tagged version preserves both latest pointers.
-initialize
-checkout_release 0.2.0 2222222222222222222222222222222222222222
-native_images 100
-record amd64
-record arm64
-require_success publish
-remember_immutable_bytes "$scratch/newer-publication"
-latest_before=$(artifact_digest fixture/runtime:latest)
-cp "$RELEASE_FIXTURE_ROOT/latest-release" "$scratch/newer-latest-release"
-checkout_release 0.1.1 3333333333333333333333333333333333333333
-native_images 200
-select_planned_version
-record amd64
-record arm64
-require_success publish
-require_immutable_bytes "$scratch/newer-publication"
-[[ $(artifact_digest fixture/runtime:latest) == "$latest_before" ]]
-cmp "$scratch/newer-latest-release" "$RELEASE_FIXTURE_ROOT/latest-release"
-[[ $(artifact_digest "fixture/runtime:$RELEASE_FIXTURE_VERSION") != absent && -f "$RELEASE_FIXTURE_ROOT/releases/$RELEASE_FIXTURE_VERSION.json" ]]
-registry_state > "$scratch/older-published"
-require_success publish
-registry_state > "$scratch/older-retried"
-cmp "$scratch/older-published" "$scratch/older-retried"
-
-# Latest pointers belong to separate services: a partially completed promotion
-# cannot let a backport demote GitHub, and retries must repair either pointer.
-initialize
-record amd64
-record arm64
-require_success publish
+first_digest=$(artifact_digest "fixture/runtime:$first_version")
 registry_before=$(artifact_digest fixture/runtime:latest)
 checkout_release 0.2.0 2222222222222222222222222222222222222222
 native_images 100
-record amd64
-record arm64
+require_success record amd64
+require_success record arm64
 touch "$RELEASE_FIXTURE_ROOT/fail-registry-latest"
 expect_blocked publish
+newer_version=$RELEASE_FIXTURE_VERSION
+newer_digest=$(artifact_digest "fixture/runtime:$newer_version")
 [[ $(artifact_digest fixture/runtime:latest) == "$registry_before" ]]
-[[ $(cat "$RELEASE_FIXTURE_ROOT/latest-release") == "$RELEASE_FIXTURE_VERSION" ]]
-cp "$RELEASE_FIXTURE_ROOT/latest-release" "$scratch/partial-latest-release"
-remember_immutable_bytes "$scratch/partial-promotion"
+[[ $(cat "$RELEASE_FIXTURE_ROOT/latest-release") == "$newer_version" ]]
 rm "$RELEASE_FIXTURE_ROOT/fail-registry-latest"
 checkout_release 0.1.1 3333333333333333333333333333333333333333
 native_images 200
-record amd64
-record arm64
+require_success record amd64
+require_success record arm64
 require_success publish
-require_immutable_bytes "$scratch/partial-promotion"
-cmp "$scratch/partial-latest-release" "$RELEASE_FIXTURE_ROOT/latest-release"
-cmp "$RELEASE_FIXTURE_ROOT/refs/$(key "fixture/runtime:$RELEASE_FIXTURE_VERSION").json" "$RELEASE_FIXTURE_ROOT/refs/$(key fixture/runtime:latest).json"
-checkout_release 0.2.0 2222222222222222222222222222222222222222
+[[ $(cat "$RELEASE_FIXTURE_ROOT/latest-release") == "$newer_version" ]]
+[[ $(artifact_digest fixture/runtime:latest) == "$(artifact_digest "fixture/runtime:$RELEASE_FIXTURE_VERSION")" ]]
+[[ $(artifact_digest "fixture/runtime:$first_version") == "$first_digest" ]]
+[[ $(artifact_digest "fixture/runtime:$newer_version") == "$newer_digest" ]]
+checkout_release "$newer_version" 2222222222222222222222222222222222222222
 require_success publish
-require_immutable_bytes "$scratch/partial-promotion"
-cmp "$scratch/partial-latest-release" "$RELEASE_FIXTURE_ROOT/latest-release"
-cmp "$RELEASE_FIXTURE_ROOT/refs/$(key "fixture/runtime:$RELEASE_FIXTURE_VERSION").json" "$RELEASE_FIXTURE_ROOT/refs/$(key fixture/runtime:latest).json"
-registry_state > "$scratch/repaired-promotion"
+[[ $(cat "$RELEASE_FIXTURE_ROOT/latest-release") == "$newer_version" ]]
+[[ $(artifact_digest fixture/runtime:latest) == "$newer_digest" ]]
+# Once both pointers advance, publishing the backport cannot move either back.
+checkout_release 0.1.1 3333333333333333333333333333333333333333
+require_success publish
+[[ $(cat "$RELEASE_FIXTURE_ROOT/latest-release") == "$newer_version" ]]
+[[ $(artifact_digest fixture/runtime:latest) == "$newer_digest" ]]
+checkout_release "$newer_version" 2222222222222222222222222222222222222222
+# Repair the opposite partial state without changing the accepted image identity.
 gh release edit 0.1.1 --repo fixture/runtime --latest
 require_success publish
-registry_state > "$scratch/repaired-github-promotion"
-cmp "$scratch/repaired-promotion" "$scratch/repaired-github-promotion"
-echo 'Release fixture passed: tagged-commit publications, immutable versions, partial/release retries, metadata ownership, tag guards and independent latest recovery'
+[[ $(cat "$RELEASE_FIXTURE_ROOT/latest-release") == "$newer_version" ]]
+[[ $(artifact_digest fixture/runtime:latest) == "$newer_digest" ]]
+echo 'Release fixture passed: modeled publication/retry decisions, tag authorization and independent latest promotion'

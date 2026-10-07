@@ -22,8 +22,9 @@ download_url() {
     redis) printf 'https://pecl.php.net/get/redis-%s.tgz\n' "${PHPREDIS_VERSION:?PHPREDIS_VERSION is required}" ;;
     zstd) printf 'https://pecl.php.net/get/zstd-%s.tgz\n' "${ZSTD_PHP_EXTENSION_VERSION:?ZSTD_PHP_EXTENSION_VERSION is required}" ;;
 
-    # --- Node.js and Rust toolchains ---
+    # --- Node.js, Python, and Rust toolchains ---
     node) printf 'https://nodejs.org/dist/v%s/node-v%s-linux-%s.tar.xz\n' "${NODE_VERSION:?NODE_VERSION is required}" "$NODE_VERSION" "$node_arch" ;;
+    python) printf 'https://www.python.org/ftp/python/%s/Python-%s.tar.xz\n' "${PYTHON_VERSION:?PYTHON_VERSION is required}" "$PYTHON_VERSION" ;;
     rust) printf 'https://static.rust-lang.org/dist/rust-%s-%s-unknown-linux-gnu.tar.xz\n' "${RUST_VERSION:?RUST_VERSION is required}" "$cpu" ;;
 
     # --- Developer CLIs and MCP tools ---
@@ -38,8 +39,10 @@ download_url() {
     lefthook) printf 'https://github.com/evilmartians/lefthook/releases/download/v%s/lefthook_%s_Linux_%s\n' "${LEFTHOOK_VERSION:?LEFTHOOK_VERSION is required}" "$LEFTHOOK_VERSION" "$kctx" ;;
     uv) printf 'https://github.com/astral-sh/uv/releases/download/%s/uv-%s-unknown-linux-gnu.tar.gz\n' "${UV_VERSION:?UV_VERSION is required}" "$cpu" ;;
     cbm) printf 'https://github.com/DeusData/codebase-memory-mcp/releases/download/v%s/codebase-memory-mcp-linux-%s-portable.tar.gz\n' "${CODEBASE_MEMORY_MCP_VERSION:?CODEBASE_MEMORY_MCP_VERSION is required}" "$target_arch" ;;
-    cua-driver) printf 'https://github.com/trycua/cua/releases/download/cua-driver-rs-v%s/cua-driver-rs-%s-linux-%s-binary.tar.gz\n' "${CUA_DRIVER_VERSION:?CUA_DRIVER_VERSION is required}" "$CUA_DRIVER_VERSION" "$kctx" ;;
     google-chrome) printf 'https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_%s_%s.deb\n' "${GOOGLE_CHROME_VERSION:?GOOGLE_CHROME_VERSION is required}" "$target_arch" ;;
+    open-browser-use) printf 'https://github.com/iFurySt/open-browser-use/releases/download/v%s/open-browser-use-cli-%s-linux-%s.tar.gz\n' "${OPEN_BROWSER_USE_VERSION:?OPEN_BROWSER_USE_VERSION is required}" "$OPEN_BROWSER_USE_VERSION" "$target_arch" ;;
+    cua-driver) printf 'https://github.com/trycua/cua/releases/download/cua-driver-rs-v%s/cua-driver-rs-%s-linux-%s-binary.tar.gz\n' "${CUA_DRIVER_VERSION:?CUA_DRIVER_VERSION is required}" "$CUA_DRIVER_VERSION" "$kctx" ;;
+    cua-driver-license) printf 'https://raw.githubusercontent.com/trycua/cua/cua-driver-rs-v%s/LICENSE.md\n' "${CUA_DRIVER_VERSION:?CUA_DRIVER_VERSION is required}" ;;
 
     # --- Cloud CLIs ---
     aws) printf 'https://awscli.amazonaws.com/awscli-exe-linux-%s-%s.zip\n' "$cpu" "${AWS_CLI_VERSION:?AWS_CLI_VERSION is required}" ;;

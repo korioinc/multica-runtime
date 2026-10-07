@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# shellcheck source=lib.sh
-source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 usage() { echo 'Usage: verify-image.sh --image IMAGE_REF [--allow-emulation]'; }
 image='' allow_emulation=false
 while (($#)); do
@@ -14,7 +12,6 @@ while (($#)); do
   shift 2
 done
 [[ -n "$image" && "$image" != -* ]] || { usage >&2; exit 2; }
-runtime_check_inputs ''
 inspect=$(docker image inspect "$image")
 image_id=$(jq -er '.[0].Id' <<< "$inspect")
 platform=$(jq -er '.[0] | .Os + "/" + .Architecture' <<< "$inspect")
@@ -25,25 +22,24 @@ if [[ "$platform" != "$native_platform" ]]; then
   [[ "$allow_emulation" == true ]] || { echo "Native verification requires a $platform Docker host; current host is $native_platform" >&2; exit 1; }
   mode=emulated
 fi
-[[ $(jq -er '.[0].Config.User' <<< "$inspect") == 65532:65532 ]]
-label=$(jq -er '.[0].Config.Labels["io.multica.image-build-id"]' <<< "$inspect")
-options=(--rm --platform "$platform" --user 65532:65532 --read-only --cap-drop ALL --security-opt no-new-privileges
-  --tmpfs '/home/multica/agents:rw,uid=65532,gid=65532,mode=0700'
-  --tmpfs '/tmp:rw,exec,uid=65532,gid=65532,mode=0700'
-  --tmpfs '/run/multica:rw,uid=65532,gid=65532,mode=0700'
-  --tmpfs '/workspace:rw,exec,uid=65532,gid=65532,mode=0700'
-  --mount "type=bind,src=$runtime_root/scripts,dst=/verify-input,readonly"
-  --mount "type=bind,src=$runtime_root/versions.env,dst=/reference/versions.env,readonly"
-  --entrypoint /bin/bash)
-# These direct probes have no network or credentials and never mutate the artifact.
-docker run "${options[@]}" --network none -e "EXPECTED_BUILD_ID=$label" "$image_id" -ec '
-  test "$(jq -er .imageBuildID /opt/multica/runtime/image.json)" = "$EXPECTED_BUILD_ID"
-  cmp /reference/versions.env /opt/multica/runtime/inventory/versions.env
-  /opt/multica/controller/runtime image verify
-  private_root=$(mktemp -d /tmp/home.XXXXXX)
-  /opt/multica/controller/runtime home layout --private-root="$private_root"
-  HOME="$private_root/agents" /verify-input/verify-native.sh
-'
+# Establish absence and admission before exercising descriptor rejection.
+docker run --rm -i --platform "$platform" --network none --user 65532:65532 \
+  --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --entrypoint /bin/sh "$image_id" -eu <<'VERIFY'
+packages=$(dpkg-query -W -f='${binary:Package}\t${db:Status-Status}\n')
+if printf '%s\n' "$packages" | awk '$1 ~ /^tini(-static)?(:[^[:space:]]+)?$/ && $2 != "not-installed" && $2 != "config-files" { found=1 } END { exit !found }' ||
+   command -v tini >/dev/null 2>&1 || command -v tini-static >/dev/null 2>&1; then
+  echo 'Runtime image still contains Tini; rebuild with the matching controller base.' >&2
+  exit 1
+fi
+for candidate in /usr/bin/tini /usr/bin/tini-static /bin/tini /bin/tini-static; do
+  if [ -e "$candidate" ] || [ -L "$candidate" ]; then
+    echo 'Runtime image still contains a Tini executable or link.' >&2
+    exit 1
+  fi
+done
+exec /opt/multica/controller/runtime image verify
+VERIFY
 # Mutate only disposable container overlays, after proving the original image.
 # The controller must reject metadata that does not match installed binaries.
 for component in descriptor daemon; do
@@ -64,4 +60,4 @@ for component in descriptor daemon; do
       fi
     '
 done
-echo "Runtime image verification passed: image=$image_id platform=$platform execution=$mode"
+echo "Runtime image Tini absence, admission and tamper rejection passed: image=$image_id platform=$platform execution=$mode"

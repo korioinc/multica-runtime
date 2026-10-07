@@ -9,11 +9,16 @@
 - Use pinned tool versions and official HTTPS download URLs.
 - Keep tool installers free of manually maintained SHA256 checksum files and custom checksum verification steps.
 
+## Code Structure
+
+- Prefer fewer, cohesive files. Add related logic to existing scripts and modules before creating new ones.
+- Code simplicity and consolidation take priority over build cache efficiency. Cache reuse alone does not justify new files, installation groups, input scopes, or Docker layers.
+- Split code only for a concrete correctness, security, or maintainability need. Accept broader rebuilds when keeping related installation logic together is simpler.
+
 ## Docker Build Structure
 
-- Order installation layers to maximize cache reuse. Place expensive, infrequently changed OS and language installations first, followed by frequently updated agent packages and runtime configuration.
+- Optimize cache reuse within the existing installation groups. Place expensive, infrequently changed OS and language installations first, followed by frequently updated agent packages and runtime configuration.
 - Give each installation layer only the versions, package lists, and scripts it consumes. Keep the full source tree, full `versions.env`, and runtime configuration outside installation inputs.
-- Use separate inputs and installation layers for independent tool groups so their changes preserve existing language build caches.
 - Reuse BuildKit cache mounts for APT packages and downloaded artifacts.
 - Add build UUIDs, release versions, and commit metadata after installation layers.
 - Use separate external BuildKit caches for each architecture in CI, importing previous caches and exporting with `mode=max`. Keep cache tags separate from release image tags.

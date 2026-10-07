@@ -25,33 +25,44 @@ flowchart TD
     base[Controller base] --> languages[OS packages and language runtimes]
     languages --> tools[Development, cloud, desktop, and database tools]
     tools --> agents[Multica CLI, coding agents, and MCP servers]
-    agents --> final[Runtime configuration, HOME seed, and descriptor]
+    agents --> final[Runtime configuration, prepared HOME, and descriptor]
     final --> verification[Native image verification]
 ```
 
 The same image runs in two modes:
 
-- **Controller:** the default command starts the controller runtime.
-- **Task worker:** `worker serve` prepares the virtual desktop, then starts the
-  worker. The worker remains the container's main process.
+- **Controller:** the default command starts `runtime init controller` as PID 1.
+  The same binary starts the controller child and reaps adopted processes.
+- **Task worker:** `worker serve` becomes PID 1, verifies its bootstrap and
+  prepares HOME. After execution admission, it configures package managers and
+  a conversation-owned desktop, then starts the provider and supervises its child processes.
+  The resident desktop starts below `runtime init worker desktop`. Each SDK runner starts below `runtime init worker run`. The signing worker
+  retains result authentication, writer fencing, and storage cleanup.
+
+Both paths use the controller binary's internal init implementation. Tini is
+absent from the base and complete candidate images. Desktop Supervisor remains
+responsible for X11, D-Bus, Openbox, and Cua Driver services.
 
 The container runs as UID/GID `65532:65532`. Installed tools live under
-`/opt/multica/tools` and are read-only. The controller initializes each worker's
-writable HOME from the public seed at `/opt/multica/runtime/home-seed`.
+`/opt/multica/tools` and are read-only. Public defaults and Pi packages are
+installed directly in `/home/multica/agents` during the image build. Each
+container uses that HOME through its private writable layer; worker startup
+applies current configuration without copying bundled packages.
 [build/layout.json](build/layout.json) defines agent executables, shared tool
-paths, environment variables, and the HOME seed. Direct commands, login shells,
+paths, and environment variables. Direct commands, login shells,
 and controller-managed commands share the same tool search paths.
 
 The final image includes its descriptor at `/opt/multica/runtime/image.json`.
 The controller validates the descriptor against its base and installed binaries
-when admitting the image.
+when admitting the image. Build identity, platform and binary hashes bind the
+controller and runtime contents together.
 
 ## Included Tools
 
 | Area | Tools |
 | --- | --- |
-| Coding agents | Multica CLI, OpenAI Codex, Pi Coding Agent |
-| MCP servers | Codebase Memory MCP, Chrome DevTools MCP |
+| Coding agents | Multica CLI, OpenAI Codex, Claude Code, Pi Coding Agent |
+| MCP servers | Codebase Memory MCP |
 | Languages | Go, Node.js, Python, PHP, Rust, GCC and G++ |
 | Package managers | npm, Corepack, pip, pipx, uv, Composer, Cargo |
 | Git and development | Git, Git LFS, git-flow, GitHub CLI, Lefthook, CMake, Ninja, Make |
@@ -60,7 +71,8 @@ when admitting the image.
 | Cloud | AWS CLI, Google Cloud CLI, Oracle Cloud Infrastructure CLI |
 | Database clients | MySQL/MariaDB, PostgreSQL, SQLite, Redis |
 | Documents and media | Pandoc, Poppler, ImageMagick, FFmpeg |
-| Desktop | Google Chrome, Cua Driver, Xvfb, Openbox, D-Bus, AT-SPI, Mousepad |
+| Desktop | Google Chrome, Xvfb, Openbox, D-Bus, AT-SPI, Mousepad |
+| Browser and desktop automation | Open Browser Use (`obu`), Cua Driver (`cua-driver`) |
 
 PHP includes extensions for internationalization, process control, networking,
 MySQL, PostgreSQL, MongoDB, Redis, and compression. Native development headers
@@ -69,9 +81,21 @@ are clients; database servers are not included.
 
 Pi's preinstalled packages are `pi-mcp-adapter`, `pi-web-access`,
 `pi-openai-service-tier`, `@dietrichgebert/ponytail`, and `pi-cache-optimizer`.
-The controller seeds them into `~/.pi/agent/npm`, where the worker can use and
-manage them without installing the bundled packages on first launch. Codebase
-Memory MCP is seeded with automatic indexing enabled.
+They are installed in `~/.pi/agent/npm`, where the worker can use and manage them
+without installing the bundled packages on first launch. Codebase Memory MCP
+creates its own configuration and index databases at its default locations when
+used; the image does not precreate a database or override its settings.
+
+Claude Code is installed globally with npm as `@anthropic-ai/claude-code`, using
+`/opt/multica/tools` as the installation prefix. Its launcher is
+`/opt/multica/tools/bin/claude`. `CLAUDE_VERSION` in [versions.env](versions.env)
+pins the package and its platform dependency. The package's postinstall step links
+the executable, and automatic updates are disabled with `DISABLE_AUTOUPDATER=1`.
+Change the pin and rebuild the image to update it.
+
+The controller registers the providers declared in [build/layout.json](build/layout.json).
+Image finalization records their installed paths, pinned versions, and binary hashes
+in `/opt/multica/runtime/image.json`. The inventory includes Claude Code, Codex, and Pi.
 
 See [versions.env](versions.env), [build/apt-packages.txt](build/apt-packages.txt),
 and [build/desktop-apt-packages.txt](build/desktop-apt-packages.txt) for the build
@@ -82,47 +106,172 @@ inputs and OS package lists.
 Configure the controller deployment to use
 `ghcr.io/korioinc/multica-runtime:latest` as its runtime image. Worker Pods must
 preserve the image entrypoint and pass `args: [worker, serve]` so desktop
-initialization runs before the worker starts. Deployment configuration and agent
-credentials are supplied by the controller and operator.
+initialization runs after execution admission and before the agent starts.
+Deployment configuration and agent credentials are supplied by the controller
+and operator.
 
-Provide writable HOME, workspace, `/tmp`, and controller runtime state mounts
-when using a read-only root filesystem. The default HOME is
-`/home/multica/agents`. Keep credentials and private configuration in runtime
-mounts or secrets; this image and its build inputs are public.
+Keep the container root filesystem writable and leave `/home/multica/agents`
+unmounted so its packaged files remain available. Mount workspace, `/tmp`, and
+controller runtime state separately. Container replacement restores the image's
+public HOME defaults; task work and provider sessions remain on workspace
+storage. Supply credentials and private configuration at runtime; this image
+and its build inputs are public.
+
+### Package proxy
+
+`PACKAGE_PROXY_URL` is the base URL of the package proxy reachable from worker
+Pods. During worker startup, it configures npm, Cargo, pip, and Composer to
+download packages through that proxy. The proxy must serve the package endpoints
+listed below.
+
+For example, set
+`PACKAGE_PROXY_URL=http://multica-runtime-controller-packages.multica.svc.cluster.local:8081`
+to use `http://multica-runtime-controller-packages.multica.svc.cluster.local:8081/npm/`
+for npm. Supply only the base URL; the worker appends each tool's path
+automatically. The URL must start with `http://` or
+`https://` and contain no whitespace, query string, or fragment. An invalid value
+causes worker setup to fail before the provider starts.
+
+Supply `PACKAGE_PROXY_URL` through the controller's operator environment to
+configure package downloads in new workers. A key in a Kubernetes Secret must
+be explicitly selected by the deployment. With the controller Helm chart:
+
+```yaml
+packageProxy:
+  enabled: true
+  allowWorkerAccess: true
+operator:
+  env:
+    - name: PACKAGE_PROXY_URL
+      valueFrom:
+        secretKeyRef:
+          name: multica-env
+          key: PACKAGE_PROXY_URL
+          optional: true
+```
+
+The chart adds the `MULTICA_OPERATOR_` prefix and opens worker access to the
+enabled proxy on TCP 8081. For the default release in namespace `multica`, use
+`http://multica-runtime-controller-packages.multica.svc.cluster.local:8081` as
+the Secret value. The gateway Service `multica-runtime-controller-gateway` serves TCP
+8080; package downloads use the separate `multica-runtime-controller-packages`
+Service.
+
+With `<base>` denoting the URL after trailing slashes are removed, workers apply:
+
+| Tool | User setting |
+| --- | --- |
+| npm | `registry=<base>/npm/` in `~/.npmrc` |
+| Cargo | crates.io replacement `proxy` with `registry="sparse+<base>/cargo/"` in `~/.cargo/config.toml` |
+| pip | `global.index-url=<base>/pypi/simple/` in the user pip configuration |
+| Composer | A global Composer repository with URL `<base>/composer`; the repository collection may be an object or an array. |
+
+Trailing slashes are removed before adding these paths. Unset or empty values
+leave package configuration untouched. Existing unrelated settings are preserved;
+Cargo's legacy `~/.cargo/config` is updated instead when present.
+
+If another deployment injects plain `PACKAGE_PROXY_URL` into the controller
+process, the entrypoint forwards it as `MULTICA_OPERATOR_PACKAGE_PROXY_URL`.
+An explicitly set prefixed value takes precedence. The controller captures
+operator values at startup and sends them in each task's bootstrap. The worker
+passes the merged environment to task package setup and the provider; task environment
+settings retain their normal precedence. A separate `kubectl exec ... env`
+process does not inherit that provider environment. Verify the value through a
+command executed by the agent.
+
+Roll out the controller after changing the Secret. Newly prepared workers receive
+the updated value; existing task bootstraps keep their captured environment.
+No proxy address is stored in the public image.
+
+For HTTP endpoints, pip also trusts the proxy's host and port, and Composer's
+global `secure-http` setting is disabled so it can access HTTP repositories.
+HTTPS endpoints do not change these settings or disable TLS verification.
 
 ### Virtual desktop
 
 Each worker has an X11 desktop on `DISPLAY=:99`, with a default screen of
 `2560x1440x24`. Set `MULTICA_DESKTOP_SCREEN` when creating the container to change
-the screen size. Desktop state is private to the worker and stored under
-`/tmp/multica-desktop`; screen contents disappear when the container stops.
+the screen size. Resident desktop state uses the worker's private
+`/run/multica/desktop` volume paths; legacy non-session execution uses
+`/tmp/multica-desktop`. In-memory windows disappear when the container stops.
 The desktop uses Unix sockets and does not expose VNC, HTTP, or X11 TCP services.
 
-From a running worker, inspect the display and start browser or native app
-automation:
+The first authorized turn prepares the display and starts a supervised Cua Driver daemon.
+It waits for X11, D-Bus, Openbox and a successful Cua CLI request before starting
+the provider. Later compatible turns check the same resident owner and retain browser windows and opened applications. Start Chrome only when a task needs a browser; its prepared Default
+profile is selected automatically:
 
 ```sh
 xdpyinfo -display "$DISPLAY"
-google-chrome-stable about:blank &
-cua-driver serve
+google-chrome-stable &
 ```
 
-Run `cua-driver doctor` from another shell in the same worker to check readiness.
-The image installs the tools; the caller supplies its agent skills and MCP client
-registrations.
+Open Browser Use and [Cua Driver](https://cua.ai/docs/how-to-guides/driver/install)
+are pinned by `OPEN_BROWSER_USE_VERSION` and `CUA_DRIVER_VERSION` in
+[versions.env](versions.env). Both provide a CLI and a stdio MCP server
+(`obu mcp` and `cua-driver mcp`); this image does not register MCP servers.
+Cua CLI commands connect directly to the supervised daemon without MCP setup.
+Cua Driver uses the official versioned Linux release for each architecture,
+including its cursor-theme companion. Telemetry and update checks are disabled;
+change the version pin and rebuild the image to update it.
+The supervised daemon uses `--no-overlay`: without a compositor, its cursor
+overlay can appear as an opaque shape in screenshots.
 
-The packaged Chrome launcher adds `--disable-dev-shm-usage` and leaves Chrome's
-internal sandbox enabled by default. Both public Chrome commands, packaged
-desktop entries, and Chrome DevTools MCP's default stable executable use this
+The image configuration step runs `open-browser-use setup --no-open --browser chrome`
+to register the native host and request installation of the
+[Open Browser Use extension](https://chromewebstore.google.com/detail/open-browser-use/bgjoihaepiejlfjinojjfgokghnodnhd).
+Chrome then installs the extension from the Web Store during the build. This step
+requires network access and follows normal Docker layer caching. Chrome handles
+Store updates through its built-in updater. The extension is intentionally
+unpinned; only the two CLI versions are managed in `versions.env`. The generated
+native host manifest is installed globally with the pinned CLI executable path,
+so workers do not need to run setup again. Agent skill updates are excluded.
+
+The image build initializes `~/.config/google-chrome/Default` and checks the
+extension connection before retaining the prepared profile. Only extension files
+and their installation settings are retained; browser identifiers, keys, cookies,
+history, sessions, and extension storage are generated independently in each worker.
+The original image-time Python initialization remains unchanged. Resident Chrome uses the existing `/home/multica/agents/.config/google-chrome` directory through its own `XDG_CONFIG_HOME`. No additional profile seed is copied. Later compatible turns retain the same browser process, profile, windows, and tabs. Cua and other desktop applications keep their neutral HOME. The root-owned Chrome launcher routes authenticated session launches through that resident owner; exactly `--version` still uses the preserved original launcher directly. Legacy non-session tasks retain their own launch domain. Malformed bootstrap and resident-owner loss refuse application launch. Chrome is closed in the resulting image. `obu` detects the installed extension
+before Chrome starts; connectivity becomes available when a task launches Chrome,
+including without network access. No `--user-data-dir` or `--profile-directory`
+arguments are needed. Additional Chrome profiles install the extension from the
+Web Store and require network access for their first installation.
+
+After starting Chrome, check browser connectivity. Cua is already running in
+each worker and uses the same XDG paths as the agent for default CLI discovery:
+
+```sh
+obu ping --session-id desktop-check
+cua-driver status
+cua-driver doctor
+cua-driver call list_apps '{}'
+```
+
+Supervisord restarts the daemon if it exits; final worker shutdown terminates it
+with the other desktop processes. Agent tasks use the existing daemon and retain
+windows and application state for compatible follow-ups. Explicit application
+close or quit remains effective. Logs are in
+`$XDG_RUNTIME_DIR/cua-driver.log`.
+
+Cua Driver uses X11 and AT-SPI directly, without a Python accessibility bridge.
+If a keyboard action reports `background_unavailable`, retry it with
+`delivery_mode: "foreground"` inside the worker's virtual desktop.
+The image and worker environment set `ACCESSIBILITY_ENABLED=1` to enable Chrome's
+Linux accessibility connection by default.
+
+The packaged Chrome launcher adds `--disable-dev-shm-usage` and `--no-first-run`.
+Skipping the first-run dialog lets new profiles initialize and install the bundled
+extension without waiting for interactive setup. Chrome's internal sandbox remains
+enabled by default. Public Chrome commands and packaged desktop entries use this
 launcher. Use `/usr/bin/google-chrome-stable` when choosing an executable
 explicitly. Custom executables, other browser installations, and direct calls to
 the internal Chrome binary bypass this configuration; caller arguments are
 passed through unchanged.
 
 The matching controller source sets container-level `seccompProfile: Unconfined`
-only on task workers. The Pod keeps `RuntimeDefault`, which the HOME init
+only on task workers. The Pod keeps `RuntimeDefault`, which the task layout init
 container inherits. UID/GID 65532, no new privileges, dropped capabilities, and
-the read-only root filesystem remain required. This removes the outer seccomp
+private writable container storage remain required. This removes the outer seccomp
 filter for every process in the worker, including agent commands. Chrome's
 internal sandbox does not protect those other processes; the shared host kernel
 remains an isolation boundary with a broader syscall attack surface.
@@ -130,10 +279,9 @@ remains an isolation boundary with a broader syscall attack surface.
 Chrome requires usable unprivileged user namespaces and compatible host LSM and
 outer-container policies. Kubernetes Pod Security Baseline and Restricted reject
 explicit `Unconfined`. There is no automatic `--no-sandbox` retry or extra
-privilege fallback. The pinned public controller base in `versions.env` predates
-this change: use the modified controller checkout and an explicit local base for
-the verification below. A runtime image rebuild alone does not change worker
-security settings in an older controller.
+privilege fallback. The controller base pinned in `versions.env` includes these
+worker security settings. Rebuild the runtime against a matching controller base
+when changing controller metadata or worker policy.
 
 Chrome stores its shared-memory files in writable `/tmp`. Keep this mount backed
 by disk, as in the controller's worker Pods, and account for its temporary storage,
@@ -155,37 +303,50 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-`python` and `python3` use the system Python. `uv venv` and `uv pip install` are
-also available. Add `$HOME/.local/bin` to your shell's `PATH` when using tools
-installed with pipx or `uv tool install`.
+`python`, `python3`, `pip`, and `pip3` use the Python release selected by
+`PYTHON_VERSION` in [versions.env](versions.env). Python is built from its official
+source release; `PIPX_VERSION` selects pipx installed in a separate virtual
+environment using that Python. Change these values and rebuild to install other
+compatible releases, including versions outside the Debian snapshot. Debian's
+`/usr/bin/python3` remains available for OS tools and the cloud CLIs.
+`uv venv` and `uv pip install` are also available. Add `$HOME/.local/bin` to your
+shell's `PATH` when using tools installed with pipx or `uv tool install`.
 
 ## Building Locally
 
 Requirements: Docker with Buildx, Bash, Git, jq, and `uuidgen`. Build and verify on
 a Docker host matching the target architecture.
 
-Validate the public build inputs and choose `linux/amd64` or `linux/arm64` for
-your host:
+Choose `linux/amd64` or `linux/arm64` for your host. In the matching controller
+checkout, build `multica-runtime-controller:local` with
+`make image IMAGE=multica-runtime-controller:local PLATFORM=linux/amd64` (adjust
+the platform for your host). Then validate the public inputs and build this runtime:
 
 ```sh
 scripts/inputs.sh check --production
 runtime_platform=linux/amd64
 scripts/build-image.sh \
   --image multica-runtime:latest \
+  --base-image multica-runtime-controller:local \
   --platform "$runtime_platform"
 ```
 
-The build consumes the controller base image selected in `versions.env`. For a
-locally built controller base, pass `--base-image LOCAL_IMAGE`. The build script
-produces the final image by default; `--target installed` stops before creating
-the runtime descriptor. Run the image verification below before using a local
-build.
+`MULTICA_CLI_VERSION` selects the installed CLI independently of the controller.
+The controller reports that installed version without a release allowlist;
+incompatible helper or API behavior fails during preparation or execution.
+
+The build script produces the final image by default; `--target installed` stops
+before creating the runtime descriptor. Run the image verification below before
+using a local build.
 
 [versions.env](versions.env) owns pinned tool inputs, and [VERSION](VERSION) owns
 the release identifier. Each installation group receives only its own inputs:
 OS, languages, general tools, desktop, database clients, and agents. Runtime
 configuration and release metadata are added after installation so those changes
 preserve installation caches.
+
+APT prefers the configured Debian snapshot even when the controller base contains
+newer packages, so runtime and development libraries resolve to matching versions.
 
 BuildKit cache mounts reuse APT packages and downloaded artifacts. The build
 script accepts repeatable `--cache-from` and `--cache-to` options. CI maintains
@@ -217,146 +378,17 @@ Verify the locally built image:
 scripts/verify-image.sh --image multica-runtime:latest
 ```
 
-Verification exercises installed tools, provider integration, controller-managed
-HOME initialization, and rejection of image metadata that differs from installed
-executables. It uses disposable containers and requires native execution by
-default. Controller adapter integration tests remain in the controller repository.
+Image verification checks that no Tini package, standard executable, or PATH
+command remains. It also exercises controller admission and rejection of a
+changed daemon binary or mismatched descriptor checksum. It uses disposable
+containers and requires native execution by default. These checks do not prove
+PID 1 supervision, provider behavior, or browser behavior. Run the controller
+repository's separate native lifecycle checks on the target architecture.
 
-### Local Chrome sandbox verification
-
-The image verifier checks Chrome MCP initialization and tool discovery without
-launching Chrome. It does not prove browser behavior or Chrome's sandbox state.
-Keep the following separate from `verify-image.sh` and CI. Use a local Unix-socket
-Docker engine on the native target architecture; record arm64 and amd64 results
-separately. Do not count emulation as native verification.
-
-Build both checkouts together (this example uses a native arm64 engine):
-
-```sh
-make -C ../multica-runtime-controller image \
-  IMAGE=multica-runtime-controller:chrome-sandbox-local PLATFORM=linux/arm64
-scripts/build-image.sh --image multica-runtime:chrome-sandbox-local \
-  --base-image multica-runtime-controller:chrome-sandbox-local --platform linux/arm64
-scripts/verify-image.sh --image multica-runtime:chrome-sandbox-local
-```
-
-In a dedicated Bash shell, prepare an isolated desktop using that exact image ID.
-These commands start desktop services and a loopback-only local page server; no
-browser is launched. They mount no host HOME or credentials and publish no ports.
-The fixture's `/tmp` is tmpfs for disposal, whereas worker `/tmp` is disk-backed;
-this fixture proves functionality, not worker storage or memory performance.
-
-```bash
-set -euo pipefail
-browser_image=$(docker image inspect multica-runtime:chrome-sandbox-local --format '{{.Id}}')
-browser_fixture="multica-chrome-check-$(uuidgen | tr '[:upper:]' '[:lower:]')"
-cleanup_browser_fixture() { docker rm -f "$browser_fixture" >/dev/null 2>&1 || true; }
-trap cleanup_browser_fixture EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-docker run -d --rm --init --name "$browser_fixture" --network none \
-  --user 65532:65532 --read-only --cap-drop ALL \
-  --security-opt no-new-privileges --security-opt seccomp=unconfined \
-  --shm-size=512m \
-  --tmpfs '/home/multica/agents:rw,uid=65532,gid=65532,mode=0700' \
-  --tmpfs '/tmp:rw,exec,uid=65532,gid=65532,mode=0700' \
-  --tmpfs '/run/multica:rw,uid=65532,gid=65532,mode=0700' \
-  --tmpfs '/workspace:rw,exec,uid=65532,gid=65532,mode=0700' \
-  -e HOME=/tmp/browser-home/agents --entrypoint /bin/bash "$browser_image" -c 'exec sleep infinity'
-docker exec -i "$browser_fixture" bash -se <<'FIXTURE'
-umask 077
-mkdir -m 0700 /tmp/browser-home
-/opt/multica/controller/runtime home layout --private-root=/tmp/browser-home
-mkdir -p "$XDG_RUNTIME_DIR"
-test "$(stat -c %a "$XDG_RUNTIME_DIR")" = 700
-touch "$XAUTHORITY"
-xauth -f "$XAUTHORITY" add "$DISPLAY" MIT-MAGIC-COOKIE-1 "$(mcookie)"
-supervisord -c /etc/multica/desktop-supervisord.conf
-printf '<!doctype html><title>Local sandbox fixture</title><p id="result">sandbox-local-ok</p>\n' > /workspace/index.html
-python3 -m http.server 8765 --bind 127.0.0.1 --directory /workspace > /tmp/local-page.log 2>&1 &
-FIXTURE
-docker exec "$browser_fixture" bash -ec '
-  for ((attempt=0; attempt<100; attempt++)); do
-    if xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 &&
-       dbus-send --session --print-reply --reply-timeout=1000 --dest=org.freedesktop.DBus / org.freedesktop.DBus.ListNames >/dev/null 2>&1 &&
-       xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -q "window id # 0x" &&
-       curl -fsS http://127.0.0.1:8765/ | grep -q sandbox-local-ok; then
-      echo "Desktop and local page server ready"; exit 0
-    fi
-    sleep 0.1
-  done
-  supervisorctl -c /etc/multica/desktop-supervisord.conf status
-  exit 1
-'
-docker exec "$browser_fixture" bash -ec '
-  id
-  grep -E "^(Uid|Gid|NoNewPrivs|CapInh|CapPrm|CapEff|CapBnd|CapAmb|Seccomp|Seccomp_filters):" /proc/self/status
-  findmnt -T /dev/shm -o TARGET,FSTYPE,SIZE,OPTIONS -b
-  test "$(findmnt -n -b -o SIZE -T /dev/shm)" = 536870912
-  shm_file=$(mktemp /dev/shm/multica-check.XXXXXX)
-  trap '\''rm -f "$shm_file"'\'' EXIT
-  printf "shm-write-ok\n" > "$shm_file"
-  test "$(cat "$shm_file")" = shm-write-ok
-  cua-driver doctor
-'
-```
-
-The outer diagnostic must show UID/GID 65532, `NoNewPrivs: 1`, all capability
-sets zero, `Seccomp: 0`, and a writable 536870912-byte tmpfs. Investigate a
-remaining outer filter or LSM restriction before interpreting browser results.
-Do not fill `/dev/shm` to its limit or increase worker memory limits to pass.
-
-Perform browser checks with the project's permitted `chrome:control-chrome`
-connection (`agent.browsers.get("extension")` and its documented APIs), or have a
-person perform them locally. The connection must control this fixture's browser;
-an unrelated host Chrome proves nothing about the image. If that connection is
-unavailable, agents must leave browser checks unperformed rather than use shell,
-MCP, CDP, or CUA browser automation as a substitute. Native app checks may use
-CUA: launch Mousepad through the installed driver's documented `launch_app` tool,
-then verify the resulting native window's accessibility tree.
-
-For a human's local browser check, enter the fixture with
-`docker exec -it "$browser_fixture" bash`. Launch `google-chrome-stable` with a
-fresh `--user-data-dir` directory under `/tmp` and open
-`http://127.0.0.1:8765/`. Confirm `sandbox-local-ok` from the page. Repeat with
-`google-chrome` and verify the packaged desktop entry resolves to the same
-launcher. Use a local MCP client inside the fixture to start the bundled
-`chrome-devtools-mcp` with its default executable and a fresh isolated profile;
-perform an actual new-page and page-read operation against the same local URL.
-Initialization or `tools/list` alone is insufficient. Do not pass any sandbox
-disabling arguments, use private browser profiles, or contact external sites or
-models. Any separately arranged display/debug connection must remain local and
-must not expose sockets or ports to external networks.
-
-Use `chrome://sandbox` or equivalent Chrome-owned diagnostics to confirm
-namespace isolation and Chrome seccomp-BPF. SUID sandbox disabled can be normal
-when the namespace sandbox is active. Correlate diagnostics with browser and
-renderer `/proc/<pid>/status`, namespace links under `/proc/<pid>/ns`, and
-`/proc/<pid>/cmdline` where readable: a renderer's own filter must be distinguished
-from the outer process's `Seccomp: 0`. Process survival alone is insufficient.
-Check that the launcher still passes `--disable-dev-shm-usage`, caller arguments
-(including an explicit `--` separator), exit status, signals, and file descriptors
-through its existing `exec`. Record unavailable diagnostics as gaps.
-
-Record the image ID, architecture, environment, actual commands, page and sandbox
-results, and any Chrome stderr before cleanup. User namespace, LSM, or admission
-failures remain failures; do not retry with `--no-sandbox`, privileged mode, extra
-capabilities, privilege escalation, or weaker host policies. On success, failure,
-or interruption, remove the fixture and all of its processes and temporary data:
-
-```bash
-docker logs "$browser_fixture"
-cleanup_browser_fixture
-trap - EXIT INT TERM
-```
-
-Run the controller's existing local K3s verification with the same complete image
-to prove controller integration. Its generic task checks do not launch Chrome.
-Observe its existing held worker before the drift phase to inspect effective
-security and `/dev/shm` capacity and small-file writes, using only that harness's
-owned cluster and kubeconfig. Separate Docker browser evidence plus generic K3s
-evidence does not prove Chrome execution inside an actual K3s worker or
-compatibility with production nodes.
+For desktop diagnosis, use a running worker's `xdpyinfo -display "$DISPLAY"` and
+Chrome's own `chrome://sandbox` diagnostics. Browser and controller integration depend on
+the worker's host and security settings; image admission alone does not establish
+them.
 
 Resolved dependency inventories are stored at `/opt/multica/runtime/inventory`,
 alongside a copy of the original build inputs. They record installed Debian, npm,

@@ -90,7 +90,6 @@ image_metadata() {
     .os + "/" + .architecture == $platform and
     .config.Labels["org.opencontainers.image.revision"] == $revision and
     .config.Labels["org.opencontainers.image.version"] == $version and
-    .config.Labels["io.multica.controller-abi"] == "2" and
     (.config.Labels["io.multica.image-build-id"] | test("^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"))
   ' <<<"$metadata" >/dev/null || fail 'native image platform or source/build mismatch'
 }

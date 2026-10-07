@@ -29,16 +29,19 @@ printf 'repo_add_once="false"\nrepo_reenable_on_distupgrade="false"\n' > /etc/de
 DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends "${packages[@]}" "$scratch/$chrome_package"
 dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > /opt/multica/runtime/inventory/debian.tsv
 
-# Install the official pinned CLI and its companion cursor tool outside HOME.
-# Do not run the interactive installer, skills install, or MCP registration.
-archive=$(basename -- "$(download_url cua-driver "$arch")")
-download cua-driver "$scratch/$archive"
-tar -xzf "$scratch/$archive" -C "$scratch" cua-driver cua-cursor-theme
-mkdir -p "$tools/cua-driver"
-install -m 0555 "$scratch/cua-driver" "$scratch/cua-cursor-theme" "$tools/cua-driver/"
-"$tools/cua-driver/cua-driver" --version
-"$tools/cua-driver/cua-cursor-theme" list --json
-google-chrome-stable --version
-ln -s ../cua-driver/cua-driver "$tools/bin/cua-driver"
-ln -s ../cua-driver/cua-cursor-theme "$tools/bin/cua-cursor-theme"
-chmod 0555 "$tools/cua-driver"
+# Open Browser Use: the same pinned binary serves the CLI and Chrome native host.
+download open-browser-use "$scratch/open-browser-use.tar.gz"
+tar -xzf "$scratch/open-browser-use.tar.gz" -C "$tools/bin" open-browser-use
+chmod 0555 "$tools/bin/open-browser-use"
+ln -s open-browser-use "$tools/bin/obu"
+[[ $("$tools/bin/obu" version) == "$OPEN_BROWSER_USE_VERSION" ]]
+
+# Cua Driver's native CLI/MCP runtime uses X11 and AT-SPI directly.
+# Keep its cursor-theme companion beside the CLI; SDK bindings are not needed.
+download cua-driver "$scratch/cua-driver.tar.gz"
+tar -xzf "$scratch/cua-driver.tar.gz" -C "$tools/bin" cua-driver cua-cursor-theme
+chmod 0555 "$tools/bin/cua-driver" "$tools/bin/cua-cursor-theme"
+[[ $("$tools/bin/cua-driver" --version) == "cua-driver $CUA_DRIVER_VERSION" ]]
+# Upstream binary archives omit the license; retain the matching release notice.
+download cua-driver-license "$scratch/cua-driver-LICENSE"
+install -Dm 0444 "$scratch/cua-driver-LICENSE" /usr/share/doc/cua-driver/LICENSE

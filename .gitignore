@@ -1,0 +1,10 @@
+.DS_Store
+.idea/
+/runtime-build
+/.build/
+/evidence/
+**/node_modules/
+**/__pycache__/
+.env
+.env.*
+**/auth.json

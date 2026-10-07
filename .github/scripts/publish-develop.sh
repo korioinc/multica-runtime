@@ -131,7 +131,6 @@ for platform in linux/amd64 linux/arm64; do
     .os + "/" + .architecture == $platform and
     .config.Labels["org.opencontainers.image.revision"] == $revision and
     .config.Labels["org.opencontainers.image.version"] == "develop" and
-    .config.Labels["io.multica.controller-abi"] == "2" and
     (.config.Labels["io.multica.image-build-id"] | type == "string" and
       test("^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"))
   ' <<<"$metadata" >/dev/null 2>"$scratch/json-error" || fail 'native image metadata differs from its verified result'

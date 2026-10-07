@@ -49,8 +49,7 @@ COPY scripts/render-path-profile.sh scripts/runtime-entrypoint.sh scripts/config
 FROM ${CONTROLLER_BASE_IMAGE_REF} AS installed
 USER 0:0
 ARG TARGETARCH
-# Installers and translated shells receive a temporary HOME before execution.
-# Their caches never enter the inherited UID 65532 HOME in image layers.
+# Installers use a temporary HOME so build caches stay out of the image user's HOME.
 RUN --mount=from=os-input,target=/build-input,readonly \
     --mount=type=tmpfs,target=/home/multica/agents \
     --mount=type=cache,id=multica-runtime-apt-$TARGETARCH,target=/var/cache/apt,sharing=locked \
@@ -78,14 +77,13 @@ RUN --mount=from=database-input,target=/build-input,readonly \
     --mount=type=cache,id=multica-runtime-apt-lists-$TARGETARCH,target=/var/lib/apt/lists,sharing=locked \
     /bin/bash /build-input/scripts/install-database-clients.sh
 RUN --mount=from=agents-input,target=/build-input,readonly \
-    --mount=type=tmpfs,target=/home/multica/agents \
     --mount=type=cache,id=multica-runtime-downloads,target=/var/cache/multica-downloads,sharing=locked \
     /bin/bash /build-input/scripts/install-agents.sh
 # Login shells reset ENV PATH via /etc/profile, including agent tool calls in
 # task-worker Pods. Install outside HOME and independently of the entrypoint.
 # Runtime configuration has no version input and never invalidates installers.
 RUN --mount=from=runtime-config-input,target=/build-input,readonly \
-    --mount=type=tmpfs,target=/home/multica/agents \
+    --mount=type=tmpfs,target=/tmp \
     mkdir -p /etc/profile.d /etc/multica /opt/multica/runtime && \
     install -m 0555 /build-input/scripts/runtime-entrypoint.sh /opt/multica/runtime/entrypoint && \
     install -m 0444 /build-input/build/desktop-supervisord.conf /etc/multica/desktop-supervisord.conf && \
@@ -98,7 +96,10 @@ ENV PATH="/opt/multica/tools/bin:/opt/multica/tools/node/bin:/opt/multica/tools/
     CLOUDSDK_PYTHON=/usr/bin/python3 \
     CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK=1 \
     CLOUDSDK_CORE_DISABLE_USAGE_REPORTING=true \
+    DISABLE_AUTOUPDATER=1 \
     PI_TELEMETRY=0 \
+    CUA_DRIVER_RS_TELEMETRY_ENABLED=false \
+    CUA_DRIVER_RS_UPDATE_CHECK=false \
     DISPLAY=:99 \
     MULTICA_DESKTOP_SCREEN=2560x1440x24 \
     XDG_RUNTIME_DIR=/tmp/multica-desktop \
@@ -106,6 +107,7 @@ ENV PATH="/opt/multica/tools/bin:/opt/multica/tools/node/bin:/opt/multica/tools/
     XAUTHORITY=/tmp/multica-desktop/Xauthority \
     XDG_SESSION_TYPE=x11 \
     GDK_BACKEND=x11 \
+    ACCESSIBILITY_ENABLED=1 \
     NO_AT_BRIDGE=0
 
 FROM installed AS final
@@ -116,15 +118,13 @@ ARG TARGETARCH
 ARG VERSION
 ARG COMMIT
 RUN --mount=from=descriptor-input,target=/build-input,readonly \
-    --mount=type=tmpfs,target=/home/multica/agents \
     /bin/bash /build-input/scripts/finalize-image.sh /build-input "$IMAGE_BUILD_ID" "$TARGETOS/$TARGETARCH"
 LABEL org.opencontainers.image.title="Multica Runtime" \
       org.opencontainers.image.source="https://github.com/korioinc/multica-runtime" \
       org.opencontainers.image.base.name="${CONTROLLER_BASE_IMAGE_REF}" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${COMMIT}" \
-      io.multica.image-build-id="${IMAGE_BUILD_ID}" \
-      io.multica.controller-abi="2"
+      io.multica.image-build-id="${IMAGE_BUILD_ID}"
 USER 65532:65532
 ENTRYPOINT ["/opt/multica/runtime/entrypoint"]
 CMD ["controller"]

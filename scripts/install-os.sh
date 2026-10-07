@@ -27,11 +27,13 @@ rm -f /etc/apt/sources.list.d/*
 printf 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/%s/ %s main\n' "$snapshot" "$codename" > /etc/apt/sources.list
 printf 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/%s/ %s-updates main\n' "$snapshot" "$codename" >> /etc/apt/sources.list
 printf 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/%s/ %s-security main\n' "$snapshot" "$codename" >> /etc/apt/sources.list
+# Base packages can be newer than the snapshot's matching development libraries.
+printf 'Package: *\nPin: origin "snapshot.debian.org"\nPin-Priority: 1001\n' > /etc/apt/preferences.d/multica-snapshot
 apt-get update
 
 # --- OS packages ---
 # Install tools from build/apt-packages.txt and resolve dependencies from the Debian snapshot.
-# Languages/build: Python 3, pip, venv, pipx, C/C++ build tools, and development libraries for PHP extensions.
+# Languages/build: system Python/venv, C/C++ build tools, and libraries for Python and PHP extensions.
 # Development/shell: Git/Git LFS/git-flow, SSH, curl, jq, ShellCheck, Vim, and archive/file utilities.
 # Documents/media: Pandoc, Poppler, ImageMagick, FFmpeg.
 set --
@@ -43,7 +45,7 @@ while IFS= read -r item || [ -n "$item" ]; do
   set -- "$@" "$item"
 done < /build-input/build/apt-packages.txt
 [ "$#" -gt 0 ] || { echo 'No Debian packages configured' >&2; exit 1; }
-DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends "$@"
+DEBIAN_FRONTEND=noninteractive apt-get install --yes --allow-downgrades --no-install-recommends "$@"
 
 # --- Installed package inventory ---
 # Record the packages actually installed in the image.

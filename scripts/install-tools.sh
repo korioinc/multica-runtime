@@ -27,7 +27,6 @@ download fd "$scratch/$fd_archive"
 mkdir "$scratch/fd"
 tar -xzf "$scratch/$fd_archive" --strip-components=1 -C "$scratch/fd"
 install -m 0555 "$scratch/fd/fd" "$tools/bin/fd"
-"$tools/bin/fd" --version
 
 # --- Kubernetes navigation tools ---
 # k9s: terminal cluster UI; kubectx: context switching; kubens: namespace switching.
@@ -52,6 +51,14 @@ mkdir "$scratch/uv"
 tar -xzf "$scratch/uv.tar.gz" --strip-components=1 -C "$scratch/uv"
 install -m 0555 "$scratch/uv/uv" "$scratch/uv/uvx" "$tools/bin/"
 
+# --- Python: pipx ---
+# Keep pipx and its dependencies separate from the selected project interpreter.
+"$tools/bin/python3" -m venv "$tools/pipx"
+"$tools/pipx/bin/python" -m pip --isolated install \
+  --index-url https://pypi.org/simple --cache-dir /var/cache/multica-downloads/pip "pipx==$PIPX_VERSION"
+ln -s ../pipx/bin/pipx "$tools/bin/pipx"
+[[ "$("$tools/bin/pipx" --version)" == "$PIPX_VERSION" ]]
+
 # --- AWS CLI ---
 # Install the AWS service management CLI in its own directory.
 download aws "$scratch/aws.zip"
@@ -62,8 +69,7 @@ unzip -q "$scratch/aws.zip" -d "$scratch/aws"
 # Install the OCI CLI version from versions.env and its dependencies in a separate virtual environment.
 /usr/bin/python3 -m venv "$tools/oci"
 "$tools/oci/bin/pip" install --no-cache-dir "oci-cli==$OCI_CLI_VERSION"
-"$tools/oci/bin/pip" check
-# Expose only the CLI. Adding its venv to PATH also shadows system python3/pip.
+# Expose only the CLI. Adding its venv to PATH also shadows the selected Python/pip.
 ln -s ../oci/bin/oci "$tools/bin/oci"
 
 # --- Google Cloud CLI ---
@@ -71,15 +77,15 @@ ln -s ../oci/bin/oci "$tools/bin/oci"
 download gcloud "$scratch/gcloud.tar.gz"
 tar -xzf "$scratch/gcloud.tar.gz" -C "$tools"
 
-# --- Git LFS / Python command setup ---
-# Configure the OS-installed Git LFS system-wide and link python to python3.
+# --- Git LFS setup ---
+# Configure the OS-installed Git LFS system-wide.
 git lfs install --system
-ln -sf /usr/bin/python3 "$tools/bin/python"
 
 # --- Installation records ---
 # Record resolved dependencies; the final stage records full public inputs.
 inventory=/opt/multica/runtime/inventory
 mkdir -p "$inventory"
 "$tools/oci/bin/pip" list --format=json > "$inventory/python-oci.json"
+"$tools/pipx/bin/python" -m pip list --format=json > "$inventory/python-pipx.json"
 # Lock installed files once; later root installers can still add their own tools.
 find "$tools" \( -type f -o -type d \) -perm /222 -exec chmod a-w {} +

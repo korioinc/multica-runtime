@@ -56,7 +56,28 @@ mkdir "$scratch/rust"
 tar -xJf "$scratch/rust.tar.xz" --strip-components=1 -C "$scratch/rust"
 "$scratch/rust/install.sh" --prefix="$tools/rust" --without=rust-docs --disable-ldconfig
 
-# --- Python / pipx version checks ---
-# Verify the pinned versions of Python and pipx installed as Debian packages by install-os.sh.
-[[ "$(python3 -c 'import platform; print(platform.python_version())')" == "$PYTHON_VERSION" ]]
-[[ "$(pipx --version)" == "$PIPX_VERSION" ]]
+# --- Python / pip ---
+# Build the selected release without replacing Debian's /usr/bin/python3.
+download python "$scratch/python.tar.xz"
+mkdir "$scratch/python"
+tar -xJf "$scratch/python.tar.xz" --strip-components=1 -C "$scratch/python"
+(
+  cd "$scratch/python"
+  ./configure --prefix="$tools/python" --with-ensurepip=install --disable-test-modules
+  make -j "${BUILD_JOBS:-4}"
+  make install
+)
+for executable in python3 pip3; do
+  ln -sf "../python/bin/$executable" "$tools/bin/$executable"
+done
+ln -sf python3 "$tools/bin/python"
+ln -sf pip3 "$tools/bin/pip"
+# python3-config derives its prefix from its invoked path, so use an exec wrapper.
+printf '#!/bin/sh\nexec /opt/multica/tools/python/bin/python3-config "$@"\n' > "$tools/bin/python3-config"
+chmod 0555 "$tools/bin/python3-config"
+
+# Fail the build if the selected runtime or essential native modules are missing.
+"$tools/bin/python3" -c 'import _uuid, bz2, ctypes, dbm.ndbm, lzma, platform, readline, sqlite3, ssl, zlib; import os; assert platform.python_version() == os.environ["PYTHON_VERSION"]'
+
+# Set permissions in this layer so later installers do not copy up language files.
+find "$tools" \( -type f -o -type d \) -perm /222 -exec chmod a-w {} +
